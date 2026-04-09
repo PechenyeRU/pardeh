@@ -2,6 +2,8 @@
   "use strict";
 
   const INSTANCE_KEY = "__e2eExtensionInstance";
+  const CHAT_KEY_PREFIX = "chat_key_";
+  const ENCRYPTION_PREFIX = "encryption_enabled_";
 
   try {
     if (window[INSTANCE_KEY]?.cleanup) {
@@ -34,6 +36,7 @@
 
     handlersAttached: false,
     onRuntimeMessage: null,
+    onStorageChanged: null,
 
     _sendClickHandler: null,
     _inputKeydownHandler: null,
@@ -94,6 +97,7 @@
     state.initialized = true;
 
     registerRuntimeListener();
+    registerStorageListener();
 
     state.chatId = await waitForChatId();
     await reloadChatState();
@@ -133,6 +137,12 @@
           chrome.runtime.onMessage.removeListener(state.onRuntimeMessage);
         } catch (_) {}
       }
+
+      if (state.onStorageChanged) {
+        try {
+          chrome.storage.onChanged.removeListener(state.onStorageChanged);
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 
@@ -154,8 +164,9 @@
 
         case "UPDATE_ENCRYPTION_STATUS":
           state.encryptionEnabled = !!message.enabled;
-          updateEncryptionStatusUI();
-          sendResponse({ success: true });
+          reloadChatState()
+            .then(() => sendResponse({ success: true }))
+            .catch((err) => sendResponse({ success: false, error: String(err?.message || err) }));
           return true;
 
         case "SEND_CHAT_MESSAGE":
@@ -171,6 +182,23 @@
     };
 
     chrome.runtime.onMessage.addListener(state.onRuntimeMessage);
+  }
+
+  function registerStorageListener() {
+    state.onStorageChanged = (changes, areaName) => {
+      if (state.destroyed || areaName !== "local" || !state.chatId) return;
+
+      const encryptionStorageKey = `${ENCRYPTION_PREFIX}${state.chatId}`;
+      const sharedKeyStorageKey = `${CHAT_KEY_PREFIX}${state.chatId}`;
+
+      if (!changes[encryptionStorageKey] && !changes[sharedKeyStorageKey]) return;
+
+      reloadChatState().catch((err) => {
+        console.error("[E2E] Failed to sync chat state from storage:", err);
+      });
+    };
+
+    chrome.storage.onChanged.addListener(state.onStorageChanged);
   }
 
   async function reloadChatState() {

@@ -15,6 +15,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     element.style.color = `var(${token})`;
   }
 
+  function updateEncryptionLabel(enabled) {
+    encryptionStatusEl.textContent = enabled ? "Enabled" : "Disabled";
+    setStatusColor(encryptionStatusEl, enabled ? "--success" : "--text-muted");
+  }
+
   function log(msg, type = "info") {
     const div = document.createElement("div");
     div.className = "log-entry";
@@ -62,8 +67,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const enc = await sendToBackground("GET_ENCRYPTION_STATUS", { chatId });
     toggle.checked = !!enc.enabled;
 
-    encryptionStatusEl.textContent = enc.enabled ? "Enabled" : "Disabled";
-    setStatusColor(encryptionStatusEl, enc.enabled ? "--success" : "--text-muted");
+    updateEncryptionLabel(!!enc.enabled);
 
     const key = await sendToBackground("GET_SHARED_KEY", { chatId });
     const hasKey = !!key.key;
@@ -92,6 +96,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   toggle.addEventListener("change", async () => {
     if (!chatId) return;
 
+    updateEncryptionLabel(toggle.checked);
+
     const res = await sendToBackground("ENCRYPT_TOGGLE", {
       chatId,
       enabled: toggle.checked
@@ -100,6 +106,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (res.success) {
       log(`Encryption ${toggle.checked ? "enabled" : "disabled"}`);
     } else {
+      updateEncryptionLabel(!toggle.checked);
+      toggle.checked = !toggle.checked;
       log("Failed to toggle encryption", "error");
     }
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
