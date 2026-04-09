@@ -525,6 +525,13 @@
           renderDecryptError(payload.textElement, "Failed to decrypt");
         }
       }
+
+      return;
+    }
+
+    if (payload.kind === "plain" && payload.textElement) {
+      markProcessed(cacheKey);
+      addMessageSecurityIndicator(payload.textElement, "plain");
     }
   }
 
@@ -648,56 +655,62 @@
     }
   }
 
+  function detectTextDirection(text) {
+  if (!text) return "ltr";
+
+  // محدوده حروف فارسی، عربی و عبری
+  const rtlRegex = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/g;
+  // محدوده حروف لاتین
+  const ltrRegex = /[A-Za-z]/g;
+
+  // پیدا کردن تمام موارد مطابقت
+  const rtlMatches = text.match(rtlRegex) || [];
+  const ltrMatches = text.match(ltrRegex) || [];
+
+  // اگر تعداد حروف فارسی بیشتر از انگلیسی بود -> rtl
+  if (rtlMatches.length > ltrMatches.length) {
+    return "rtl";
+  } 
+  // اگر تعداد حروف انگلیسی بیشتر بود -> ltr
+  if (ltrMatches.length > rtlMatches.length) {
+    return "ltr";
+  }
+
+  // اگر تعداد مساوی بود یا هیچکدام یافت نشد (مثل اعداد یا علائم)، 
+  // آن وقت به سراغ اولین کاراکتر قدرتمند می‌رویم (همان منطق قبلی شما)
+  for (const ch of text) {
+    if (/[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/.test(ch)) return "rtl";
+    if (/[A-Za-z]/.test(ch)) return "ltr";
+  }
+
+  return "ltr";
+}
+
+
   function renderDecryptedMessage(textElement, decryptedText) {
     if (!textElement) return;
     if (textElement.dataset.e2eDecrypted === "1") return;
-
-    textElement.dataset.e2eDecrypted = "1";
     textElement.textContent = "";
 
-    const wrapper = document.createElement("span");
-    wrapper.className = "e2e-inline-wrap";
-    wrapper.style.display = "inline-flex";
-    wrapper.style.alignItems = "flex-start";
-    wrapper.style.gap = "0.35em";
-    wrapper.style.verticalAlign = "middle";
-    wrapper.style.maxWidth = "100%";
 
-    const lock = document.createElement("span");
-    lock.className = "e2e-lock-icon";
-    lock.textContent = "🔒";
-    lock.style.flex = "0 0 auto";
-    lock.style.fontSize = "0.95em";
-    lock.style.lineHeight = "1";
-    lock.style.marginTop = "0.1em";
-
+    textElement.dataset.e2eDecrypted = "1";
     const text = document.createElement("span");
-    text.className = "e2e-decrypted-text";
     text.textContent = decryptedText;
-    text.style.whiteSpace = "pre-wrap";
-    text.style.wordBreak = "break-word";
-    text.style.overflowWrap = "anywhere";
-    text.style.unicodeBidi = "plaintext";
+    text.className = "p";
 
     const dir = detectTextDirection(decryptedText);
     text.dir = dir;
-    wrapper.dir = dir;
 
     if (dir === "rtl") {
-      wrapper.style.flexDirection = "row-reverse";
-      wrapper.style.textAlign = "right";
       text.style.textAlign = "right";
       text.style.direction = "rtl";
     } else {
-      wrapper.style.flexDirection = "row";
-      wrapper.style.textAlign = "left";
       text.style.textAlign = "left";
       text.style.direction = "ltr";
     }
 
-    wrapper.appendChild(lock);
-    wrapper.appendChild(text);
-    textElement.appendChild(wrapper);
+    textElement.appendChild(text);
+    addDecryptedMessageIndicator(textElement);
   }
 
   function renderDecryptError(textElement, message = "Failed to decrypt") {
@@ -727,26 +740,76 @@
     textElement.appendChild(wrapper);
   }
 
-  function detectTextDirection(text) {
-    if (!text) return "ltr";
+  function addDecryptedMessageIndicator(textElement) {
+    const bubble =
+      textElement.closest('[data-sentry-component="BaseBubbleFC"]') ||
+      textElement.closest('[data-sentry-component="Message"]') ||
+      textElement.closest(".message-item");
 
-    // Arabic/Persian/Hebrew ranges
-    const rtlRegex = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
-    const ltrRegex = /[A-Za-z]/;
+    if (!bubble) return;
 
-    const rtlMatch = text.match(rtlRegex);
-    const ltrMatch = text.match(ltrRegex);
+    const infoContainer =
+      bubble.querySelector('[data-sentry-component="InfoFC"]') ||
+      bubble.querySelector('[data-testid="message-state-icon"]')?.parentElement;
 
-    if (rtlMatch && !ltrMatch) return "rtl";
-    if (ltrMatch && !rtlMatch) return "ltr";
-
-    // first strong char wins
-    for (const ch of text) {
-      if (/[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/.test(ch)) return "rtl";
-      if (/[A-Za-z]/.test(ch)) return "ltr";
+    if (!infoContainer || infoContainer.querySelector(".e2e-message-lock-indicator")) {
+      return;
     }
 
-    return "ltr";
+    const lockIndicator = document.createElement("span");
+    lockIndicator.textContent = "🔒";
+    lockIndicator.className = "e2e-message-lock-indicator x3ai0M";
+    lockIndicator.setAttribute("aria-label", "Decrypted message");
+    lockIndicator.title = "Decrypted message";
+    // lockIndicator.style.display = "inline-flex";
+    // lockIndicator.style.alignItems = "center";
+    // lockIndicator.style.justifyContent = "center";
+    // lockIndicator.style.width = "12px";
+    // lockIndicator.style.height = "12px";
+    // lockIndicator.style.flex = "0 0 auto";
+    // lockIndicator.style.color = "currentColor";
+    // lockIndicator.style.opacity = "0.72";
+
+    // lockIndicator.appendChild(createLockSvgIcon());
+
+    const timestamp =
+      infoContainer.querySelector("time") ||
+      infoContainer.querySelector("p") ||
+      infoContainer.lastElementChild;
+
+    const stateIcon = infoContainer.querySelector('[data-testid="message-state-icon"]');
+    if (stateIcon?.nextSibling) {
+      infoContainer.insertBefore(lockIndicator, stateIcon.nextSibling);
+    } else if (timestamp) {
+      infoContainer.insertBefore(lockIndicator, timestamp);
+    } else {
+      infoContainer.appendChild(lockIndicator);
+    }
+  }
+
+  function createLockSvgIcon() {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("width", "11");
+    svg.setAttribute("height", "11");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.display = "block";
+    svg.style.alignSelf = "self-start";
+
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("stroke", "white");
+    path.setAttribute("stroke-width", "2.75");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute(
+      "d",
+      "M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"
+    );
+
+    svg.appendChild(path);
+    return svg;
   }
 
   async function safeSendToBackground(type, data = {}) {
