@@ -36,7 +36,10 @@
     onRuntimeMessage: null,
 
     _sendClickHandler: null,
-    _inputKeydownHandler: null
+    _inputKeydownHandler: null,
+
+    routeHooksInstalled: false,
+    lastKnownUrl: location.href
   };
 
   window[INSTANCE_KEY] = { cleanup };
@@ -94,10 +97,15 @@
 
     state.chatId = await waitForChatId();
     await reloadChatState();
-    startUrlWatcher();
+
+    installRouteChangeHooks();
     startDomWatcher();
-    attachUiHooks();
-    observeMessages();
+    attachUiHooks(true);
+    observeMessages(true);
+    await scanExistingMessages();
+    updateEncryptionStatusUI();
+
+    console.log("[E2E] Initialized for chat:", state.chatId);
   }
 
   function cleanup() {
@@ -166,7 +174,12 @@
   }
 
   async function reloadChatState() {
-    if (!state.chatId || state.destroyed) return;
+    if (!state.chatId || state.destroyed) {
+      state.encryptionEnabled = false;
+      state.sharedKey = null;
+      updateEncryptionStatusUI();
+      return;
+    }
 
     const status = await safeSendToBackground("GET_ENCRYPTION_STATUS", { chatId: state.chatId });
     state.encryptionEnabled = !!status?.enabled;
@@ -186,33 +199,80 @@
     updateEncryptionStatusUI();
   }
 
-  function startUrlWatcher() {
-    let lastUrl = location.href;
+  function installRouteChangeHooks() {
+    if (state.routeHooksInstalled) return;
+    state.routeHooksInstalled = true;
+
+    const notifyRouteChange = async () => {
+      if (state.destroyed) return;
+
+      const newChatId = extractChatId();
+      if (newChatId && newChatId !== state.chatId) {
+        await handleChatChanged(newChatId);
+      }
+    };
+
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+
+    history.pushState = function (...args) {
+      const result = originalPushState.apply(this, args);
+      setTimeout(() => {
+        notifyRouteChange().catch((err) => console.error("[E2E] pushState route change failed:", err));
+      }, 50);
+      return result;
+    };
+
+    history.replaceState = function (...args) {
+      const result = originalReplaceState.apply(this, args);
+      setTimeout(() => {
+        notifyRouteChange().catch((err) => console.error("[E2E] replaceState route change failed:", err));
+      }, 50);
+      return result;
+    };
+
+    window.addEventListener("popstate", () => {
+      setTimeout(() => {
+        notifyRouteChange().catch((err) => console.error("[E2E] popstate route change failed:", err));
+      }, 50);
+    });
 
     state.urlWatchInterval = setInterval(async () => {
       if (state.destroyed) return;
+
       const currentUrl = location.href;
-      if (currentUrl === lastUrl) return;
+      if (currentUrl === state.lastKnownUrl) return;
 
-      lastUrl = currentUrl;
-      const newChatId = extractChatId();
-
-      if (newChatId && newChatId !== state.chatId) {
-        state.chatId = newChatId;
-        state.processedCache.clear();
-
-        await safeSendToBackground("CHAT_ID_CHANGED", { chatId: newChatId });
-        await reloadChatState();
-
-        if (state.messageObserver) {
-          state.messageObserver.disconnect();
-          state.messageObserver = null;
-        }
-
-        attachUiHooks(true);
-        observeMessages(true);
-      }
+      state.lastKnownUrl = currentUrl;
+      await notifyRouteChange();
     }, 500);
+  }
+
+  async function handleChatChanged(newChatId) {
+    if (!newChatId || state.destroyed) return;
+    if (newChatId === state.chatId) return;
+
+    console.log("[E2E] Chat changed:", state.chatId, "=>", newChatId);
+
+    state.chatId = newChatId;
+    state.processedCache.clear();
+
+    await safeSendToBackground("CHAT_ID_CHANGED", { chatId: newChatId });
+    await reloadChatState();
+
+    if (state.messageObserver) {
+      state.messageObserver.disconnect();
+      state.messageObserver = null;
+    }
+
+    attachUiHooks(true);
+    observeMessages(true);
+
+    // Wait a bit for SPA DOM to finish replacing content
+    await sleep(150);
+    await scanExistingMessages();
+
+    updateEncryptionStatusUI();
   }
 
   function startDomWatcher() {
@@ -224,12 +284,17 @@
       const sendButton = findSendButton();
       const input = findMessageInput();
 
-      if (sendButton !== state.sendButton || input !== state.messageInput) {
+      const oldButtonDetached = state.sendButton && !state.sendButton.isConnected;
+      const oldInputDetached = state.messageInput && !state.messageInput.isConnected;
+
+      if (
+        forceRebindNeeded(sendButton, input, oldButtonDetached, oldInputDetached)
+      ) {
         attachUiHooks(true);
       }
 
-      if (!state.messageObserver) {
-        observeMessages();
+      if (!state.messageObserver || !findMessageContainer()) {
+        observeMessages(true);
       }
     });
 
@@ -237,6 +302,15 @@
       childList: true,
       subtree: true
     });
+  }
+
+  function forceRebindNeeded(sendButton, input, oldButtonDetached, oldInputDetached) {
+    return (
+      sendButton !== state.sendButton ||
+      input !== state.messageInput ||
+      oldButtonDetached ||
+      oldInputDetached
+    );
   }
 
   function attachUiHooks(force = false) {
@@ -280,6 +354,7 @@
       if (state.encryptionEnabled && state.sharedKey) {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation?.();
         await handleEncryptedSend();
       }
     };
@@ -295,6 +370,7 @@
       if (state.encryptionEnabled && state.sharedKey) {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation?.();
         await handleEncryptedSend();
       }
     };
@@ -335,6 +411,40 @@
       childList: true,
       subtree: true
     });
+  }
+
+  async function scanExistingMessages() {
+    if (state.destroyed) return;
+
+    const container = findMessageContainer();
+    if (!container) return;
+
+    const seen = new Set();
+    const candidates = [];
+
+    for (const sel of BALE_SELECTORS.messageItemCandidates) {
+      const found = container.querySelectorAll(sel);
+      for (const el of found) {
+        if (!seen.has(el)) {
+          seen.add(el);
+          candidates.push(el);
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      for (const child of container.children) {
+        if (child instanceof Element) candidates.push(child);
+      }
+    }
+
+    for (const item of candidates) {
+      try {
+        await processNewMessage(item);
+      } catch (err) {
+        console.error("[E2E] scanExistingMessages item failed:", err);
+      }
+    }
   }
 
   async function processNewMessage(messageElement) {
@@ -384,7 +494,8 @@
     if (originalText.startsWith("E2EMSG:")) {
       markProcessed(cacheKey);
 
-      if (!state.encryptionEnabled || !state.sharedKey) return;
+      // Decrypt whenever key exists. Toggle only controls sending.
+      if (!state.sharedKey) return;
 
       try {
         const textForDecrypt = payload.text;
@@ -422,7 +533,6 @@
 
     const originalMessage = getInputText(state.messageInput).trim();
     if (!originalMessage) return;
-
     if (!state.sharedKey) return;
 
     try {
@@ -540,13 +650,15 @@
 
   function renderDecryptedMessage(textElement, decryptedText) {
     if (!textElement) return;
+    if (textElement.dataset.e2eDecrypted === "1") return;
 
+    textElement.dataset.e2eDecrypted = "1";
     textElement.textContent = "";
 
     const wrapper = document.createElement("span");
     wrapper.className = "e2e-inline-wrap";
     wrapper.style.display = "inline-flex";
-    wrapper.style.alignItems = "center";
+    wrapper.style.alignItems = "flex-start";
     wrapper.style.gap = "0.35em";
     wrapper.style.verticalAlign = "middle";
     wrapper.style.maxWidth = "100%";
@@ -557,6 +669,7 @@
     lock.style.flex = "0 0 auto";
     lock.style.fontSize = "0.95em";
     lock.style.lineHeight = "1";
+    lock.style.marginTop = "0.1em";
 
     const text = document.createElement("span");
     text.className = "e2e-decrypted-text";
@@ -564,6 +677,23 @@
     text.style.whiteSpace = "pre-wrap";
     text.style.wordBreak = "break-word";
     text.style.overflowWrap = "anywhere";
+    text.style.unicodeBidi = "plaintext";
+
+    const dir = detectTextDirection(decryptedText);
+    text.dir = dir;
+    wrapper.dir = dir;
+
+    if (dir === "rtl") {
+      wrapper.style.flexDirection = "row-reverse";
+      wrapper.style.textAlign = "right";
+      text.style.textAlign = "right";
+      text.style.direction = "rtl";
+    } else {
+      wrapper.style.flexDirection = "row";
+      wrapper.style.textAlign = "left";
+      text.style.textAlign = "left";
+      text.style.direction = "ltr";
+    }
 
     wrapper.appendChild(lock);
     wrapper.appendChild(text);
@@ -573,12 +703,15 @@
   function renderDecryptError(textElement, message = "Failed to decrypt") {
     if (!textElement) return;
 
+    textElement.dataset.e2eDecrypted = "1";
     textElement.textContent = "";
 
     const wrapper = document.createElement("span");
     wrapper.style.display = "inline-flex";
     wrapper.style.alignItems = "center";
     wrapper.style.gap = "0.35em";
+    wrapper.style.direction = "ltr";
+    wrapper.style.unicodeBidi = "plaintext";
 
     const lock = document.createElement("span");
     lock.textContent = "🔒";
@@ -587,10 +720,33 @@
     text.textContent = `[${message}]`;
     text.style.fontStyle = "italic";
     text.style.opacity = "0.8";
+    text.style.direction = "ltr";
 
     wrapper.appendChild(lock);
     wrapper.appendChild(text);
     textElement.appendChild(wrapper);
+  }
+
+  function detectTextDirection(text) {
+    if (!text) return "ltr";
+
+    // Arabic/Persian/Hebrew ranges
+    const rtlRegex = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+    const ltrRegex = /[A-Za-z]/;
+
+    const rtlMatch = text.match(rtlRegex);
+    const ltrMatch = text.match(ltrRegex);
+
+    if (rtlMatch && !ltrMatch) return "rtl";
+    if (ltrMatch && !rtlMatch) return "ltr";
+
+    // first strong char wins
+    for (const ch of text) {
+      if (/[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/.test(ch)) return "rtl";
+      if (/[A-Za-z]/.test(ch)) return "ltr";
+    }
+
+    return "ltr";
   }
 
   async function safeSendToBackground(type, data = {}) {
@@ -613,9 +769,31 @@
   }
 
   function extractChatId() {
-    const url = location.href;
-    const match = url.match(/[?&]uid=(\d+)/);
-    return match?.[1] || null;
+    try {
+      const url = new URL(location.href);
+
+      const uid = url.searchParams.get("uid");
+      if (uid) return uid;
+
+      const peerId = url.searchParams.get("peerId");
+      if (peerId) return peerId;
+
+      const chatId = url.searchParams.get("chatId");
+      if (chatId) return chatId;
+
+      const dialogId = url.searchParams.get("dialogId");
+      if (dialogId) return dialogId;
+    } catch (_) {}
+
+    const pathMatch =
+      location.href.match(/\/chat\/([^/?#]+)/) ||
+      location.href.match(/[?&](chatId|peerId|dialogId)=([^&]+)/);
+
+    if (pathMatch) {
+      return pathMatch[pathMatch.length - 1];
+    }
+
+    return null;
   }
 
   function waitForChatId(timeoutMs = 15000) {
@@ -677,7 +855,6 @@
   }
 
   function extractMessagePayload(messageElement) {
-    // Handshake can be extracted from full bubble text
     const fullText = messageElement.textContent?.trim();
     if (!fullText) return null;
 
@@ -689,7 +866,6 @@
       };
     }
 
-    // E2EMSG must come from the real message text container only
     const textElement = findBestTextContainer(messageElement);
     if (!textElement) return null;
 
@@ -722,9 +898,9 @@
   }
 
   function extractEncryptedEnvelope(text) {
-    const msg = text.match(/^E2EMSG:([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)$/);
-    if (msg) return msg[0];
-    return null;
+    if (!text) return null;
+    const msg = text.match(/E2EMSG:([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)/);
+    return msg ? msg[0] : null;
   }
 
   function extractLegacyHandshakeKey(text, prefix) {
@@ -752,7 +928,7 @@
       const nodes = messageElement.querySelectorAll(selector);
       for (const node of nodes) {
         const txt = node.textContent?.trim();
-        if (txt && txt.startsWith("E2EMSG:")) {
+        if (txt && txt.includes("E2EMSG:")) {
           return node;
         }
       }
