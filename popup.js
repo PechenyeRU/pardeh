@@ -11,6 +11,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   let chatId = null;
 
+  function setStatusColor(element, token) {
+    element.style.color = `var(${token})`;
+  }
+
   function log(msg, type = "info") {
     const div = document.createElement("div");
     div.className = "log-entry";
@@ -59,27 +63,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     toggle.checked = !!enc.enabled;
 
     encryptionStatusEl.textContent = enc.enabled ? "Enabled" : "Disabled";
-    encryptionStatusEl.style.color = enc.enabled ? "#4CAF50" : "#999";
+    setStatusColor(encryptionStatusEl, enc.enabled ? "--success" : "--text-muted");
 
     const key = await sendToBackground("GET_SHARED_KEY", { chatId });
     const hasKey = !!key.key;
 
     keyStatusEl.textContent = hasKey ? "Ready" : "No key";
-    keyStatusEl.style.color = hasKey ? "#4CAF50" : "#999";
+    setStatusColor(keyStatusEl, hasKey ? "--success" : "--text-muted");
 
     const pending = await sendToBackground("GET_PENDING_HANDSHAKE", { chatId });
 
     if (hasKey) {
       handshakeStatusEl.textContent = "Complete";
-      handshakeStatusEl.style.color = "#4CAF50";
+      setStatusColor(handshakeStatusEl, "--success");
       handshakeBtn.disabled = true;
     } else if (pending?.pending) {
       handshakeStatusEl.textContent = "In progress";
-      handshakeStatusEl.style.color = "#FF9800";
+      setStatusColor(handshakeStatusEl, "--warning");
       handshakeBtn.disabled = false;
     } else {
       handshakeStatusEl.textContent = "Not started";
-      handshakeStatusEl.style.color = "#999";
+      setStatusColor(handshakeStatusEl, "--text-muted");
       handshakeBtn.disabled = false;
     }
   }

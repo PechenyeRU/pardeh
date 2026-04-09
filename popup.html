@@ -3,20 +3,74 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
   <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f5f8;
+      --surface: #ffffff;
+      --surface-soft: #f7f9fc;
+      --surface-strong: #111827;
+      --text: #18212f;
+      --text-muted: #667085;
+      --border: #dbe3ee;
+      --border-radius: 15px;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.10);
+      --primary: #1d8cf0;
+      --primary-hover: #1676cb;
+      --success: #23a26d;
+      --warning: #f59e0b;
+      --danger: #e5484d;
+      --danger-hover: #cb3d42;
+      --log-bg: #0f172a;
+      --log-border: rgba(148, 163, 184, 0.18);
+      --log-text: #d7e0ea;
+      --log-time: #7cc16b;
+      --log-info: #6cb6ff;
+      --log-warn: #f5c451;
+      --log-error: #ff7b72;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --surface: #101827;
+        --surface-soft: #172133;
+        --surface-strong: #f8fafc;
+        --text: #e5edf5;
+        --text-muted: #95a3b8;
+        --border: #233147;
+        --border-radius: 15px;
+        --shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+        --primary: #3787dd;
+        --primary-hover: #59a0f2;
+        --success: #35c88a;
+        --warning: #ffb648;
+        --danger: #fb4545;
+        --danger-hover: #fa6969;
+        --log-bg: #08101f;
+        --log-border: rgba(148,   163, 184, 0.14);
+        --log-text: #d7e0ea;
+        --log-time: #86d67c;
+        --log-info: #7cc4ff;
+        --log-warn: #ffd166;
+        --log-error: #ff8e8e;
+      }
+    }
+
     body {
       width: 300px;
-      padding: 15px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #f5f5f5;
       margin: 0;
+      background: var(--bg);
+      color: var(--text);
     }
     
     .container {
-      background: white;
+      background: var(--surface);
       border-radius: 8px;
       padding: 20px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      box-shadow: var(--shadow);
     }
     
     .header {
@@ -24,7 +78,7 @@
       align-items: center;
       margin-bottom: 20px;
       padding-bottom: 15px;
-      border-bottom: 1px solid #e0e0e0;
+      border-bottom: 1px solid var(--border);
     }
     
     .logo {
@@ -35,14 +89,15 @@
     h1 {
       margin: 0;
       font-size: 18px;
-      color: #333;
+      color: var(--text);
     }
     
     .status-card {
-      background: #f8f9fa;
-      border-radius: 6px;
+      background: var(--surface-soft);
+      border-radius: var(--border-radius);
       padding: 15px;
       margin-bottom: 20px;
+      border: 1px solid var(--border);
     }
     
     .status-item {
@@ -51,10 +106,17 @@
       justify-content: space-between;
       align-items: center;
     }
+
+    .status-item:last-child {
+      margin-bottom: 0px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
     
     .status-label {
       font-weight: 500;
-      color: #666;
+      color: var(--text-muted);
       font-size: 14px;
     }
     
@@ -64,18 +126,18 @@
     }
     
     #chatId {
-      color: #2196F3;
+      color: var(--primary);
       font-family: monospace;
       font-size: 12px;
       word-break: break-all;
     }
     
     #encryptionStatus {
-      color: #4CAF50;
+      color: var(--success);
     }
     
     #handshakeStatus {
-      color: #FF9800;
+      color: var(--warning);
     }
     
     .toggle-container {
@@ -84,13 +146,14 @@
       align-items: center;
       margin: 20px 0;
       padding: 15px;
-      background: #f8f9fa;
-      border-radius: 6px;
+      background: var(--surface-soft);
+      border-radius: var(--border-radius);
+      border: 1px solid var(--border);
     }
     
     .toggle-label {
       font-weight: 600;
-      color: #333;
+      color: var(--text);
       font-size: 16px;
     }
     
@@ -115,7 +178,7 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background-color: #ccc;
+      background-color: #9aa6b2;
       transition: .4s;
       border-radius: 24px;
     }
@@ -127,13 +190,13 @@
       width: 16px;
       left: 4px;
       bottom: 4px;
-      background-color: white;
+      background-color: #fff;
       transition: .4s;
       border-radius: 50%;
     }
     
     input:checked + .slider {
-      background-color: #4CAF50;
+      background-color: var(--success);
     }
     
     input:checked + .slider:before {
@@ -147,10 +210,10 @@
     button {
       width: 100%;
       padding: 10px;
-      background: #2196F3;
+      background: var(--primary);
       color: white;
       border: none;
-      border-radius: 4px;
+      border-radius: var(--border-radius);
       font-weight: 600;
       cursor: pointer;
       font-size: 14px;
@@ -158,47 +221,62 @@
     }
     
     button:hover {
-      background: #1976D2;
+      background: var(--primary-hover);
     }
     
     button:disabled {
-      background: #ccc;
+      background: #93a1b2;
       cursor: not-allowed;
+    }
+
+    .danger-button {
+      background: var(--danger);
+    }
+
+    .danger-button:hover {
+      background: var(--danger-hover);
     }
     
     .logs {
       margin-top: 20px;
       max-height: 200px;
       overflow-y: auto;
-      background: #1e1e1e;
-      color: #d4d4d4;
+      background: var(--log-bg);
+      color: var(--log-text);
       padding: 10px;
       border-radius: 4px;
       font-family: monospace;
       font-size: 11px;
       white-space: pre-wrap;
+      border: 1px solid var(--log-border);
     }
     
     .log-entry {
       margin: 2px 0;
       padding: 2px 0;
-      border-bottom: 1px solid #333;
+      border-bottom: 1px solid var(--log-border);
     }
     
     .log-time {
-      color: #6A9955;
+      color: var(--log-time);
     }
     
     .log-info {
-      color: #569CD6;
+      color: var(--log-info);
     }
     
     .log-warn {
-      color: #FFD700;
+      color: var(--log-warn);
     }
     
     .log-error {
-      color: #F44747;
+      color: var(--log-error);
+    }
+
+    .section-title {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: var(--text-muted);
     }
     
     .hidden {
@@ -245,18 +323,19 @@
     
     <div class="actions">
       <button id="initiateHandshake" disabled>Initiate Handshake</button>
-      <button id="clearKeys" style="margin-top: 10px; background: #F44336;">Clear Keys</button>
+      <button id="clearKeys" class="danger-button" style="margin-top: 10px;">Clear Keys</button>
     </div>
     
-    <div style="margin-top: 20px;">
-      <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #666;">Debug Logs</h3>
+    <!-- only uncommet when devemeloping -->
+    <!-- <div style="margin-top: 20px;">
+      <h3 class="section-title">Debug Logs</h3>
       <div class="logs" id="logs">
         <div class="log-entry">
           <span class="log-time">[00:00:00]</span>
           <span class="log-info">Extension loaded</span>
         </div>
       </div>
-    </div>
+    </div> -->
   </div>
   
   <script src="popup.js"></script>
