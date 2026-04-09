@@ -98,7 +98,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else {
       log("Failed to toggle encryption", "error");
     }
-
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+if (tabs.length) {
+  try {
+    await chrome.tabs.sendMessage(tabs[0].id, {
+      type: "UPDATE_ENCRYPTION_STATUS",
+      enabled: toggle.checked
+    });
+  } catch (_) {}
+}
     refreshUI();
   });
 
