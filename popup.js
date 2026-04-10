@@ -21,6 +21,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function log(msg, type = "info") {
+    if (!logsEl) return;
+
     const div = document.createElement("div");
     div.className = "log-entry";
 
