@@ -58,21 +58,28 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function getActiveChatContext() {
     const tabs = await api.tabs.query({ active: true, currentWindow: true });
-    if (!tabs.length) return { chatId: null, tabId: null };
+    const tab = tabs[0];
+    if (!tab) return { chatId: null, tabId: null, isBale: false };
+
+    // Without the broad "tabs" permission tab.url is only visible for
+    // hosts we hold permissions on, so it doubles as the Bale check.
+    const isBale = !!tab.url?.startsWith("https://web.bale.ai/");
+    if (!isBale) return { chatId: null, tabId: tab.id, isBale };
 
     try {
-      const res = await api.tabs.sendMessage(tabs[0].id, { type: "GET_CHAT_ID" });
-      return { chatId: res?.chatId || null, tabId: tabs[0].id };
+      const res = await api.tabs.sendMessage(tab.id, { type: "GET_CHAT_ID" });
+      return { chatId: res?.chatId || null, tabId: tab.id, isBale };
     } catch {
-      return { chatId: null, tabId: tabs[0].id };
+      return { chatId: null, tabId: tab.id, isBale };
     }
   }
 
   async function refreshUI() {
-    ({ chatId, tabId } = await getActiveChatContext());
+    let isBale = false;
+    ({ chatId, tabId, isBale } = await getActiveChatContext());
 
     if (!chatId) {
-      chatIdEl.textContent = "Not detected";
+      chatIdEl.textContent = isBale ? "Open a chat" : "Open web.bale.ai";
       handshakeBtn.disabled = true;
       setVisible(safetyCard, false);
       setVisible(rotateBtn, false);

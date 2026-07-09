@@ -6,9 +6,7 @@
   "minimum_chrome_version": "114",
   "permissions": [
     "storage",
-    "activeTab",
-    "scripting",
-    "tabs"
+    "scripting"
   ],
   "host_permissions": [
     "https://web.bale.ai/*"

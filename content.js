@@ -854,26 +854,22 @@
     try {
       const url = new URL(location.href);
 
-      const uid = url.searchParams.get("uid");
-      if (uid) return uid;
+      // Bale is an SPA: the chat id can live in the query string
+      // (web.bale.ai/chat?uid=...) or, depending on routing, in the hash.
+      const paramSets = [url.searchParams];
+      const hashQuery = url.hash.split("?")[1];
+      if (hashQuery) paramSets.push(new URLSearchParams(hashQuery));
 
-      const peerId = url.searchParams.get("peerId");
-      if (peerId) return peerId;
+      for (const params of paramSets) {
+        for (const key of ["uid", "peerId", "chatId", "dialogId"]) {
+          const value = params.get(key);
+          if (value) return value;
+        }
+      }
 
-      const chatId = url.searchParams.get("chatId");
-      if (chatId) return chatId;
-
-      const dialogId = url.searchParams.get("dialogId");
-      if (dialogId) return dialogId;
+      const pathMatch = (url.pathname + url.hash).match(/\/chat\/([^/?#]+)/);
+      if (pathMatch) return pathMatch[1];
     } catch (_) {}
-
-    const pathMatch =
-      location.href.match(/\/chat\/([^/?#]+)/) ||
-      location.href.match(/[?&](chatId|peerId|dialogId)=([^&]+)/);
-
-    if (pathMatch) {
-      return pathMatch[pathMatch.length - 1];
-    }
 
     return null;
   }
