@@ -1,0 +1,11 @@
+{
+  "name": "pardeh",
+  "version": "2.0.0",
+  "private": true,
+  "description": "End-to-end encryption overlay for Bale Web (browser extension)",
+  "scripts": {
+    "test": "node --test 'test/*.test.js'",
+    "lint": "node --check background.js && node --check crypto.js && node --check state-machine.js && node --check i18n.js && node --check content.js && node --check popup.js",
+    "build": "./build.sh"
+  }
+}
