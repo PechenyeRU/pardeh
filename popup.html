@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -20,8 +19,10 @@
       --primary-hover: #1676cb;
       --success: #23a26d;
       --warning: #f59e0b;
+      --warning-soft: rgba(245, 158, 11, 0.12);
       --danger: #e5484d;
       --danger-hover: #cb3d42;
+      --danger-soft: rgba(229, 72, 77, 0.10);
       --log-bg: #0f172a;
       --log-border: rgba(148, 163, 184, 0.18);
       --log-text: #d7e0ea;
@@ -46,10 +47,12 @@
         --primary-hover: #59a0f2;
         --success: #35c88a;
         --warning: #ffb648;
+        --warning-soft: rgba(255, 182, 72, 0.14);
         --danger: #fb4545;
         --danger-hover: #fa6969;
+        --danger-soft: rgba(251, 69, 69, 0.14);
         --log-bg: #08101f;
-        --log-border: rgba(148,   163, 184, 0.14);
+        --log-border: rgba(148, 163, 184, 0.14);
         --log-text: #d7e0ea;
         --log-time: #86d67c;
         --log-info: #7cc4ff;
@@ -65,14 +68,14 @@
       background: var(--bg);
       color: var(--text);
     }
-    
+
     .container {
       background: var(--surface);
       border-radius: 8px;
       padding: 20px;
       box-shadow: var(--shadow);
     }
-    
+
     .header {
       display: flex;
       align-items: center;
@@ -80,18 +83,18 @@
       padding-bottom: 15px;
       border-bottom: 1px solid var(--border);
     }
-    
+
     .logo {
       font-size: 24px;
       margin-right: 10px;
     }
-    
+
     h1 {
       margin: 0;
       font-size: 18px;
       color: var(--text);
     }
-    
+
     .status-card {
       background: var(--surface-soft);
       border-radius: var(--border-radius);
@@ -99,7 +102,7 @@
       margin-bottom: 20px;
       border: 1px solid var(--border);
     }
-    
+
     .status-item {
       margin-bottom: 10px;
       display: flex;
@@ -108,38 +111,75 @@
     }
 
     .status-item:last-child {
-      margin-bottom: 0px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      margin-bottom: 0;
     }
-    
+
     .status-label {
       font-weight: 500;
       color: var(--text-muted);
       font-size: 14px;
     }
-    
+
     .status-value {
       font-weight: 600;
       font-size: 14px;
     }
-    
+
     #chatId {
       color: var(--primary);
       font-family: monospace;
       font-size: 12px;
       word-break: break-all;
     }
-    
-    #encryptionStatus {
-      color: var(--success);
+
+    .banner {
+      border-radius: var(--border-radius);
+      padding: 12px 14px;
+      margin-bottom: 15px;
+      font-size: 13px;
+      line-height: 1.45;
+      border: 1px solid transparent;
     }
-    
-    #handshakeStatus {
+
+    .banner-danger {
+      background: var(--danger-soft);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+
+    .banner-warning {
+      background: var(--warning-soft);
+      border-color: var(--warning);
       color: var(--warning);
     }
-    
+
+    .section-title {
+      margin: 0 0 10px 0;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+    }
+
+    .fingerprint {
+      font-family: monospace;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-align: center;
+      color: var(--text);
+      padding: 8px 4px;
+      user-select: all;
+    }
+
+    .hint {
+      margin: 8px 0 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+
     .toggle-container {
       display: flex;
       justify-content: space-between;
@@ -150,13 +190,13 @@
       border-radius: var(--border-radius);
       border: 1px solid var(--border);
     }
-    
+
     .toggle-label {
       font-weight: 600;
       color: var(--text);
       font-size: 16px;
     }
-    
+
     /* Toggle switch */
     .switch {
       position: relative;
@@ -164,13 +204,13 @@
       width: 50px;
       height: 24px;
     }
-    
+
     .switch input {
       opacity: 0;
       width: 0;
       height: 0;
     }
-    
+
     .slider {
       position: absolute;
       cursor: pointer;
@@ -182,7 +222,7 @@
       transition: .4s;
       border-radius: 24px;
     }
-    
+
     .slider:before {
       position: absolute;
       content: "";
@@ -194,19 +234,22 @@
       transition: .4s;
       border-radius: 50%;
     }
-    
+
     input:checked + .slider {
       background-color: var(--success);
     }
-    
+
     input:checked + .slider:before {
       transform: translateX(26px);
     }
-    
+
     .actions {
       margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
-    
+
     button {
       width: 100%;
       padding: 10px;
@@ -219,14 +262,25 @@
       font-size: 14px;
       transition: background 0.2s;
     }
-    
+
     button:hover {
       background: var(--primary-hover);
     }
-    
+
     button:disabled {
       background: #93a1b2;
       cursor: not-allowed;
+    }
+
+    .secondary-button {
+      background: transparent;
+      color: var(--primary);
+      border: 1px solid var(--border);
+    }
+
+    .secondary-button:hover {
+      background: var(--surface-soft);
+      color: var(--primary-hover);
     }
 
     .danger-button {
@@ -236,7 +290,7 @@
     .danger-button:hover {
       background: var(--danger-hover);
     }
-    
+
     .logs {
       margin-top: 20px;
       max-height: 200px;
@@ -250,35 +304,18 @@
       white-space: pre-wrap;
       border: 1px solid var(--log-border);
     }
-    
+
     .log-entry {
       margin: 2px 0;
       padding: 2px 0;
       border-bottom: 1px solid var(--log-border);
     }
-    
-    .log-time {
-      color: var(--log-time);
-    }
-    
-    .log-info {
-      color: var(--log-info);
-    }
-    
-    .log-warn {
-      color: var(--log-warn);
-    }
-    
-    .log-error {
-      color: var(--log-error);
-    }
 
-    .section-title {
-      margin: 0 0 10px 0;
-      font-size: 14px;
-      color: var(--text-muted);
-    }
-    
+    .log-time { color: var(--log-time); }
+    .log-info { color: var(--log-info); }
+    .log-warn { color: var(--log-warn); }
+    .log-error { color: var(--log-error); }
+
     .hidden {
       display: none;
     }
@@ -288,31 +325,57 @@
   <div class="container">
     <div class="header">
       <div class="logo">🔒</div>
-      <h1>Bale E2E Encryption</h1>
+      <h1>Pardeh</h1>
     </div>
-    
+
+    <div id="rekeyWarning" class="banner banner-danger hidden">
+      The contact sent a new key offer. Accept it only if they told you
+      they rotated keys, then compare the new safety number out-of-band.
+    </div>
+
+    <div id="legacyPeerWarning" class="banner banner-warning hidden">
+      Your contact runs an outdated version of Pardeh. Ask them to update
+      before doing a handshake.
+    </div>
+
+    <div id="legacyKeyWarning" class="banner banner-warning hidden">
+      This chat uses a legacy key from an old version. Rotate keys to
+      upgrade to the current protocol.
+    </div>
+
     <div class="status-card">
       <div class="status-item">
         <span class="status-label">Chat ID:</span>
         <span id="chatId" class="status-value">Loading...</span>
       </div>
-      
+
       <div class="status-item">
         <span class="status-label">Encryption:</span>
         <span id="encryptionStatus" class="status-value">Checking...</span>
       </div>
-      
+
       <div class="status-item">
         <span class="status-label">Handshake:</span>
         <span id="handshakeStatus" class="status-value">Not started</span>
       </div>
-      
+
       <div class="status-item">
         <span class="status-label">Key Status:</span>
         <span id="keyStatus" class="status-value">No key</span>
       </div>
     </div>
-    
+
+    <div id="safetyCard" class="status-card hidden">
+      <h3 class="section-title">Safety number</h3>
+      <div id="fingerprint" class="fingerprint"></div>
+      <p class="hint">
+        Compare this number with your contact over another channel (call,
+        in person). If it does not match, someone may be intercepting the
+        conversation — do not trust the chat.
+      </p>
+      <button id="copyFingerprint" class="secondary-button" style="margin-top: 10px;">Copy safety number</button>
+    </div>
+
     <div class="toggle-container">
       <span class="toggle-label">Enable Encryption</span>
       <label class="switch">
@@ -320,24 +383,20 @@
         <span class="slider"></span>
       </label>
     </div>
-    
+
     <div class="actions">
       <button id="initiateHandshake" disabled>Initiate Handshake</button>
-      <button id="clearKeys" class="danger-button" style="margin-top: 10px;">Clear Keys</button>
+      <button id="rotateKeys" class="secondary-button hidden">Rotate Keys</button>
+      <button id="clearKeys" class="danger-button">Clear Keys</button>
     </div>
-    
-    <!-- only uncommet when devemeloping -->
+
+    <!-- uncomment only when developing -->
     <!-- <div style="margin-top: 20px;">
       <h3 class="section-title">Debug Logs</h3>
-      <div class="logs" id="logs">
-        <div class="log-entry">
-          <span class="log-time">[00:00:00]</span>
-          <span class="log-info">Extension loaded</span>
-        </div>
-      </div>
+      <div class="logs" id="logs"></div>
     </div> -->
   </div>
-  
+
   <script src="popup.js"></script>
 </body>
 </html>
