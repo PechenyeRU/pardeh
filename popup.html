@@ -203,6 +203,25 @@
       color: var(--text-muted);
     }
 
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 13px;
+      resize: vertical;
+      min-height: 56px;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+
     .toggle-container {
       display: flex;
       justify-content: space-between;
@@ -393,6 +412,13 @@
         <input type="checkbox" id="encryptionToggle">
         <span class="slider"></span>
       </label>
+    </div>
+
+    <div id="composeCard" class="status-card hidden">
+      <h3 class="section-title" data-i18n="composeTitle">Secure compose</h3>
+      <textarea id="composeInput" rows="3" data-i18n-placeholder="composePlaceholder"></textarea>
+      <p class="hint" data-i18n="composeHint"></p>
+      <button id="composeSend" style="margin-top: 10px;" data-i18n="composeSend">Encrypt &amp; Send</button>
     </div>
 
     <div class="actions">

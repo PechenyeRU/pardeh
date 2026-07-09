@@ -442,7 +442,7 @@
     state.sendButton = sendButton;
     state.messageInput = input;
 
-    state._sendClickHandler = async (e) => {
+    state._sendClickHandler = (e) => {
       if (state.destroyed) return;
 
       if (state.bypassNextSend) {
@@ -450,32 +450,14 @@
         return;
       }
 
-      const text = getInputText(state.messageInput).trim();
-      if (!text) return;
-      if (isHandshakeText(text)) return;
-
-      if (canEncrypt()) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation?.();
-        await handleEncryptedSend();
-      }
+      interceptOutgoingMessage(e);
     };
 
-    state._inputKeydownHandler = async (e) => {
+    state._inputKeydownHandler = (e) => {
       if (state.destroyed) return;
       if (e.key !== "Enter" || e.shiftKey) return;
 
-      const text = getInputText(state.messageInput).trim();
-      if (!text) return;
-      if (isHandshakeText(text)) return;
-
-      if (canEncrypt()) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation?.();
-        await handleEncryptedSend();
-      }
+      interceptOutgoingMessage(e);
     };
 
     state.sendButton.addEventListener("click", state._sendClickHandler, true);
@@ -665,30 +647,65 @@
     }
   }
 
-  async function handleEncryptedSend() {
-    if (state.destroyed || !state.messageInput) return;
+  // Fail-safe interception: the host page is treated as potentially
+  // hostile, so the plaintext is pulled OUT of its input synchronously
+  // inside the event handler — after this function returns, the page
+  // input never holds the plaintext again during the async encryption
+  // window (a malicious page could otherwise ship it on its own trigger,
+  // e.g. a keyup listener). On any anomaly nothing is sent.
+  function interceptOutgoingMessage(e) {
+    if (!canEncrypt() || !state.messageInput) return;
 
-    const originalMessage = getInputText(state.messageInput).trim();
-    if (!originalMessage) return;
-    if (!canEncrypt()) return;
+    const text = getInputText(state.messageInput).trim();
+    if (!text) return;
+    if (isHandshakeText(text)) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+
+    clearInput(state.messageInput);
+    handleEncryptedSend(text).catch((err) => {
+      console.error("[E2E] Encrypted send failed:", err);
+    });
+  }
+
+  async function handleEncryptedSend(plaintext) {
+    if (state.destroyed || !state.messageInput) return;
 
     try {
       const res = await safeSendToBackground("ENCRYPT_MESSAGE", {
         chatId: state.chatId,
-        text: originalMessage
+        text: plaintext
       });
-      if (!res?.success || !res.envelope) {
+
+      // Accept only a string that is exactly one well-formed envelope.
+      const parsed = res?.success && typeof res.envelope === "string"
+        ? Crypto.parseMessageEnvelope(res.envelope)
+        : null;
+      if (!parsed || parsed.envelope !== res.envelope) {
         throw new Error(res?.error || "encrypt_failed");
       }
 
       setInputText(state.messageInput, res.envelope);
       await sleep(80);
+
+      // Verify the page did not tamper with the injected envelope, then
+      // dispatch the send synchronously so there is no gap between the
+      // check and the click.
+      if (getInputText(state.messageInput).trim() !== res.envelope) {
+        throw new Error("input_tampered");
+      }
       triggerSendMessage();
+
       await sleep(80);
       clearInput(state.messageInput);
     } catch (err) {
-      // The original plaintext stays in the input and nothing was sent.
+      // Fail closed: nothing was sent; give the plaintext back to the
+      // user instead of leaving it lost or, worse, in flight.
       console.error("[E2E] Encryption failed:", err);
+      clearInput(state.messageInput);
+      setInputText(state.messageInput, plaintext);
       showToast(tr("toastEncryptFailed"), "error");
     }
   }
@@ -1101,22 +1118,25 @@
     textElement.textContent = "";
 
     textElement.dataset.e2eDecrypted = "1";
+
+    // The plaintext goes into a CLOSED shadow root: page scripts cannot
+    // traverse it, so the decrypted text is rendered for the user but is
+    // not readable by the host page through DOM APIs (textContent,
+    // innerText, selection). Inheritable styles (font, color) still flow
+    // in from the surrounding bubble.
+    const host = document.createElement("span");
+    const root = host.attachShadow({ mode: "closed" });
+
     const text = document.createElement("span");
     text.textContent = decryptedText;
-    text.className = "p";
 
     const dir = detectTextDirection(decryptedText);
     text.dir = dir;
+    text.style.textAlign = dir === "rtl" ? "right" : "left";
+    text.style.direction = dir;
 
-    if (dir === "rtl") {
-      text.style.textAlign = "right";
-      text.style.direction = "rtl";
-    } else {
-      text.style.textAlign = "left";
-      text.style.direction = "ltr";
-    }
-
-    textElement.appendChild(text);
+    root.appendChild(text);
+    textElement.appendChild(host);
     addDecryptedMessageIndicator(textElement);
   }
 

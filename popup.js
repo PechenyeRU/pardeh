@@ -11,6 +11,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   const fingerprintEl = document.getElementById("fingerprint");
   const copyFingerprintBtn = document.getElementById("copyFingerprint");
 
+  const composeCard = document.getElementById("composeCard");
+  const composeInput = document.getElementById("composeInput");
+  const composeSendBtn = document.getElementById("composeSend");
+
   const rekeyWarning = document.getElementById("rekeyWarning");
   const legacyPeerWarning = document.getElementById("legacyPeerWarning");
   const legacyKeyWarning = document.getElementById("legacyKeyWarning");
@@ -43,6 +47,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     for (const el of document.querySelectorAll("[data-i18n]")) {
       el.textContent = t(el.dataset.i18n);
+    }
+    for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+      el.placeholder = t(el.dataset.i18nPlaceholder);
     }
   }
 
@@ -135,6 +142,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       chatIdEl.textContent = isBale ? t("openChat") : t("openBale");
       handshakeBtn.disabled = true;
       setVisible(safetyCard, false);
+      setVisible(composeCard, false);
       setVisible(rotateBtn, false);
       setVisible(rekeyWarning, false);
       setVisible(legacyPeerWarning, false);
@@ -196,6 +204,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       fingerprintEl.textContent = chatState.fingerprint;
     }
 
+    setVisible(composeCard, chatState.v2Ready || chatState.legacyReady);
     setVisible(rotateBtn, chatState.v2Ready || chatState.legacyReady);
     setVisible(rekeyWarning, !!chatState.warnRekey);
     setVisible(legacyPeerWarning, !!chatState.peerLegacy);
@@ -295,6 +304,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     setTimeout(refreshUI, 300);
+  });
+
+  composeSendBtn.addEventListener("click", async () => {
+    const text = composeInput.value.trim();
+    if (!chatId || !text) return;
+
+    composeSendBtn.disabled = true;
+    const res = await sendToBackground("SEND_ENCRYPTED", { chatId, tabId, text });
+    composeSendBtn.disabled = false;
+
+    if (res.success) {
+      composeInput.value = "";
+      showStatus(t("composeSent"), "success");
+    } else {
+      // Fail closed: the plaintext stays here in the popup, nothing was
+      // handed to the page.
+      showStatus(t("errComposeFailed", { error: res.error }), "error");
+    }
   });
 
   copyFingerprintBtn.addEventListener("click", async () => {

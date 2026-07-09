@@ -53,6 +53,9 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "ENCRYPT_MESSAGE":
         return handleEncryptMessage(message.chatId, message.text);
 
+      case "SEND_ENCRYPTED":
+        return handleSendEncrypted(message.chatId, message.text, tabId);
+
       case "DECRYPT_BATCH":
         return handleDecryptBatch(message.chatId, message.envelopes);
 
@@ -215,6 +218,19 @@ async function handleEncryptMessage(chatId, text) {
   }
 
   return { success: false, error: "no_key" };
+}
+
+// Secure compose path: the plaintext comes from the popup (extension UI
+// the page cannot observe), gets encrypted here and only the envelope is
+// ever injected into the page.
+async function handleSendEncrypted(chatId, text, tabId) {
+  if (!chatId || !text) return { success: false, error: "Missing chatId or text" };
+
+  const encrypted = await handleEncryptMessage(chatId, text);
+  if (!encrypted.success) return encrypted;
+
+  await sendChatMessage(tabId, encrypted.envelope);
+  return { success: true, legacy: encrypted.legacy };
 }
 
 async function handleDecryptBatch(chatId, envelopes) {

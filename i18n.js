@@ -50,6 +50,14 @@ const PARDEH_DICTIONARIES = {
     btnClear: "Clear Keys",
     btnConfirm: "Are you sure?",
 
+    // Popup: secure compose
+    composeTitle: "Secure compose",
+    composePlaceholder: "Write your message…",
+    composeHint: "Text typed here never reaches the Bale page — only the encrypted envelope is injected. Use this if you do not trust the page with your keystrokes.",
+    composeSend: "Encrypt & Send",
+    composeSent: "Encrypted message sent",
+    errComposeFailed: "Send failed: {error}",
+
     // Popup: banners
     rekeyWarning: "The contact sent a new key offer. Accept it only if they told you they rotated keys, then compare the new safety number out-of-band.",
     legacyPeerWarning: "Your contact runs an outdated version of Pardeh. Ask them to update before doing a handshake.",
@@ -135,6 +143,13 @@ const PARDEH_DICTIONARIES = {
     btnRotate: "چرخش کلیدها",
     btnClear: "حذف کلیدها",
     btnConfirm: "مطمئن هستید؟",
+
+    composeTitle: "ارسال امن",
+    composePlaceholder: "پیام خود را بنویسید…",
+    composeHint: "متنی که اینجا می‌نویسید هرگز به صفحهٔ بله نمی‌رسد — فقط نسخهٔ رمز شده تزریق می‌شود. اگر به صفحه اعتماد ندارید از اینجا بنویسید.",
+    composeSend: "رمزنگاری و ارسال",
+    composeSent: "پیام رمز شده ارسال شد",
+    errComposeFailed: "ارسال ناموفق بود: {error}",
 
     rekeyWarning: "مخاطب شما کلید جدیدی پیشنهاد داده است. فقط اگر خودش تأیید کرده که کلید را عوض کرده بپذیرید و سپس شمارهٔ امنیتی جدید را از راه دیگری مقایسه کنید.",
     legacyPeerWarning: "مخاطب شما نسخهٔ قدیمی پرده را اجرا می‌کند. پیش از تبادل کلید از او بخواهید به‌روزرسانی کند.",

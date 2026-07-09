@@ -43,11 +43,19 @@ If **both** parties initiate simultaneously, a deterministic tie-break on the pu
 
 **What it protects against:** the Bale server (or anyone else on the path) reading message *content*. Ciphertext is authenticated; tampering fails decryption visibly.
 
+**Hardening against a hostile page.** The Bale web app itself is treated as potentially adversarial:
+
+- Keys are non-extractable `CryptoKey` objects in extension IndexedDB. Page scripts cannot reach extension storage, and content scripts share no JS objects with the page (isolated world), so there is no path from the page to key material.
+- Decrypted incoming messages are rendered inside **closed shadow roots**: visible to the user, not readable by page scripts through DOM APIs (`textContent`, `innerText`, selection).
+- The send path **fails closed**: the plaintext is pulled out of the page input synchronously inside the event handler (so the page cannot ship it during the async encryption window), the envelope returned by the background script must parse as exactly one well-formed message, and the input is re-verified against it immediately before the send is dispatched. On any anomaly nothing is sent and the plaintext is handed back to the user.
+- **Typing into the page composer is still visible to the page** — window-level key listeners fire before any extension code, on any element, shadow DOM or not. When you do not trust the page with your keystrokes, use **Secure compose** in the popup: the text is typed in extension UI the page cannot observe, encrypted in the background script, and only the envelope is injected into the chat.
+
 **What it does NOT protect against:**
 
 - **Active MITM during an unverified handshake.** Key exchange runs through the chat itself, so the server could substitute keys. Mitigation: compare the safety number out-of-band — a MITM produces different numbers on each side. This is detection, not prevention; it requires users to actually compare.
 - **No forward secrecy.** A compromised device/key store decrypts all history that used those keys. This is an architectural trade-off: messages are re-decrypted from the chat DOM on every render, so old keys must be retained. Rotate keys periodically to bound the blast radius.
-- **Endpoint compromise.** Decrypted text lives in the page DOM; the Bale web client (or any other extension with page access) can read it there. Metadata (who talks to whom, when, message sizes) stays visible to the server regardless.
+- **In-page UI spoofing and display control.** The page can imitate the status dot or toasts, and it ultimately controls what is rendered — it could hide or fabricate *displayed* messages. The popup is the source of truth for encryption state; encryption guarantees what your peer's extension decrypts, not what a hostile page chooses to show.
+- **Metadata.** Who talks to whom, when, and message sizes stay visible to the server regardless.
 - **Availability tricks.** The server can drop or reorder handshake messages.
 
 Chats created with pre-2.0 versions keep decrypting through the legacy code path, and sending keeps working with the old key, but the legacy scheme (raw ECDH secret used directly as the AES key) is weaker — the UI flags such chats; rotate keys to upgrade them.
