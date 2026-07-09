@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  // Firefox exposes promise-based `browser.*`; Chrome exposes `chrome.*`.
+  const api = globalThis.browser ?? globalThis.chrome;
+
   const INSTANCE_KEY = "__e2eExtensionInstance";
   const CHAT_KEY_PREFIX = "chat_key_";
   const ENCRYPTION_PREFIX = "encryption_enabled_";
@@ -134,13 +137,13 @@
 
       if (state.onRuntimeMessage) {
         try {
-          chrome.runtime.onMessage.removeListener(state.onRuntimeMessage);
+          api.runtime.onMessage.removeListener(state.onRuntimeMessage);
         } catch (_) {}
       }
 
       if (state.onStorageChanged) {
         try {
-          chrome.storage.onChanged.removeListener(state.onStorageChanged);
+          api.storage.onChanged.removeListener(state.onStorageChanged);
         } catch (_) {}
       }
     } catch (_) {}
@@ -181,7 +184,7 @@
       }
     };
 
-    chrome.runtime.onMessage.addListener(state.onRuntimeMessage);
+    api.runtime.onMessage.addListener(state.onRuntimeMessage);
   }
 
   function registerStorageListener() {
@@ -198,7 +201,7 @@
       });
     };
 
-    chrome.storage.onChanged.addListener(state.onStorageChanged);
+    api.storage.onChanged.addListener(state.onStorageChanged);
   }
 
   async function reloadChatState() {
@@ -845,8 +848,8 @@
 
     try {
       return await new Promise((resolve) => {
-        chrome.runtime.sendMessage({ type, ...data }, (response) => {
-          const err = chrome.runtime.lastError;
+        api.runtime.sendMessage({ type, ...data }, (response) => {
+          const err = api.runtime.lastError;
           if (err) {
             resolve({ error: err.message });
             return;

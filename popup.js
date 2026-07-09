@@ -1,3 +1,6 @@
+// Firefox exposes promise-based `browser.*`; Chrome exposes `chrome.*`.
+const api = globalThis.browser ?? globalThis.chrome;
+
 document.addEventListener("DOMContentLoaded", async () => {
   const chatIdEl = document.getElementById("chatId");
   const encryptionStatusEl = document.getElementById("encryptionStatus");
@@ -33,9 +36,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function sendToBackground(type, data = {}) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type, ...data }, (res) => {
-        if (chrome.runtime.lastError) {
-          resolve({ error: chrome.runtime.lastError.message });
+      api.runtime.sendMessage({ type, ...data }, (res) => {
+        if (api.runtime.lastError) {
+          resolve({ error: api.runtime.lastError.message });
         } else {
           resolve(res || {});
         }
@@ -44,11 +47,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function getActiveChatId() {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabs = await api.tabs.query({ active: true, currentWindow: true });
     if (!tabs.length) return null;
 
     try {
-      const res = await chrome.tabs.sendMessage(tabs[0].id, { type: "GET_CHAT_ID" });
+      const res = await api.tabs.sendMessage(tabs[0].id, { type: "GET_CHAT_ID" });
       return res?.chatId || null;
     } catch {
       return null;
@@ -112,10 +115,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       toggle.checked = !toggle.checked;
       log("Failed to toggle encryption", "error");
     }
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabs = await api.tabs.query({ active: true, currentWindow: true });
 if (tabs.length) {
   try {
-    await chrome.tabs.sendMessage(tabs[0].id, {
+    await api.tabs.sendMessage(tabs[0].id, {
       type: "UPDATE_ENCRYPTION_STATUS",
       enabled: toggle.checked
     });

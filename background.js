@@ -1,5 +1,8 @@
 "use strict";
 
+// Firefox exposes promise-based `browser.*`; Chrome exposes `chrome.*`.
+const api = globalThis.browser ?? globalThis.chrome;
+
 console.log("[E2E] Manual-handshake background loaded");
 
 const PENDING_PREFIX = "pending_handshake_";
@@ -7,7 +10,7 @@ const CHAT_KEY_PREFIX = "chat_key_";
 const ENCRYPTION_PREFIX = "encryption_enabled_";
 const HANDSHAKE_TTL_MS = 10 * 60 * 1000;
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     switch (message.type) {
       case "GET_CHAT_ID":
@@ -55,30 +58,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function handleEncryptionToggle(chatId, enabled) {
   if (!chatId) return { success: false, error: "Missing chatId" };
-  await chrome.storage.local.set({ [`${ENCRYPTION_PREFIX}${chatId}`]: !!enabled });
+  await api.storage.local.set({ [`${ENCRYPTION_PREFIX}${chatId}`]: !!enabled });
   return { success: true };
 }
 
 async function handleGetEncryptionStatus(chatId) {
   if (!chatId) return { enabled: false, error: "Missing chatId" };
-  const result = await chrome.storage.local.get([`${ENCRYPTION_PREFIX}${chatId}`]);
+  const result = await api.storage.local.get([`${ENCRYPTION_PREFIX}${chatId}`]);
   return { enabled: !!result[`${ENCRYPTION_PREFIX}${chatId}`] };
 }
 
 async function handleGetSharedKey(chatId) {
   if (!chatId) return { key: null, error: "Missing chatId" };
-  const result = await chrome.storage.local.get([`${CHAT_KEY_PREFIX}${chatId}`]);
+  const result = await api.storage.local.get([`${CHAT_KEY_PREFIX}${chatId}`]);
   return { key: result[`${CHAT_KEY_PREFIX}${chatId}`] || null };
 }
 
 async function handleClearChatState(chatId) {
   if (!chatId) return { success: false, error: "Missing chatId" };
 
-  await chrome.storage.local.remove([
+  await api.storage.local.remove([
     `${CHAT_KEY_PREFIX}${chatId}`,
     `${ENCRYPTION_PREFIX}${chatId}`
   ]);
-  await chrome.storage.session.remove([pendingKey(chatId)]);
+  await api.storage.session.remove([pendingKey(chatId)]);
 
   return { success: true };
 }
@@ -244,16 +247,16 @@ function pendingKey(chatId) {
 }
 
 async function setPendingHandshake(chatId, state) {
-  await chrome.storage.session.set({ [pendingKey(chatId)]: state });
+  await api.storage.session.set({ [pendingKey(chatId)]: state });
 }
 
 async function getPendingHandshake(chatId) {
-  const result = await chrome.storage.session.get([pendingKey(chatId)]);
+  const result = await api.storage.session.get([pendingKey(chatId)]);
   return result[pendingKey(chatId)] || null;
 }
 
 async function clearPendingHandshake(chatId) {
-  await chrome.storage.session.remove([pendingKey(chatId)]);
+  await api.storage.session.remove([pendingKey(chatId)]);
 }
 
 async function clearExpiredPendingHandshake(chatId) {
@@ -266,10 +269,10 @@ async function clearExpiredPendingHandshake(chatId) {
 }
 
 async function getActiveBaleTabId() {
-  const baleTabs = await chrome.tabs.query({ url: "*://web.bale.ai/*" });
+  const baleTabs = await api.tabs.query({ url: "*://web.bale.ai/*" });
   if (baleTabs.length > 0) return baleTabs[0].id ?? null;
 
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabs = await api.tabs.query({ active: true, currentWindow: true });
   return tabs[0]?.id ?? null;
 }
 
@@ -279,7 +282,7 @@ async function sendMessageToTab(tabId, message, retries = 2) {
   let lastErr = null;
   for (let i = 0; i <= retries; i++) {
     try {
-      return await chrome.tabs.sendMessage(tabId, message);
+      return await api.tabs.sendMessage(tabId, message);
     } catch (err) {
       lastErr = err;
       await sleep(300);
@@ -291,11 +294,11 @@ async function sendMessageToTab(tabId, message, retries = 2) {
 
 async function ensureContentScript(tabId) {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    await api.tabs.sendMessage(tabId, { type: "PING" });
     return;
   } catch (_) {}
 
-  await chrome.scripting.executeScript({
+  await api.scripting.executeScript({
     target: { tabId },
     files: ["content.js"]
   });
@@ -365,7 +368,7 @@ async function exportAesKey(key) {
 }
 
 async function saveSharedKey(chatId, keyB64) {
-  await chrome.storage.local.set({ [`${CHAT_KEY_PREFIX}${chatId}`]: keyB64 });
+  await api.storage.local.set({ [`${CHAT_KEY_PREFIX}${chatId}`]: keyB64 });
 }
 
 function validateRawP256PublicKeyB64(publicKeyB64) {
