@@ -163,6 +163,10 @@
           api.storage.onChanged.removeListener(state.onStorageChanged);
         } catch (_) {}
       }
+
+      closeStatusMenu();
+      document.getElementById(DOT_ID)?.remove();
+      document.getElementById("e2e-toast-container")?.remove();
     } catch (_) {}
   }
 
@@ -317,6 +321,7 @@
     state.processedCache.clear();
     state.plaintextCache.clear();
     state.decryptQueue.clear();
+    closeStatusMenu();
 
     await reloadChatState();
 
@@ -355,6 +360,12 @@
 
       if (!state.messageObserver || !findMessageContainer()) {
         observeMessages(true);
+      }
+
+      // React re-renders can drop the injected status dot with the header.
+      const dot = document.getElementById(DOT_ID);
+      if (!dot || !dot.isConnected) {
+        updateEncryptionStatusUI();
       }
     });
 
@@ -775,45 +786,262 @@
   }
 
   // -------------------------------------------------------------------------
-  // Rendering
+  // Status dot: a small circle next to the chat header (falls back to a
+  // fixed corner spot when the header cannot be found) replacing the old
+  // floating badge that overlapped the send button on narrow windows.
+  // Clicking it opens a quick menu with toggle, handshake and the safety
+  // number.
   // -------------------------------------------------------------------------
 
+  const DOT_ID = "e2e-status-dot";
+  const MENU_ID = "e2e-status-menu";
+
   function updateEncryptionStatusUI() {
-    let indicator = document.getElementById("e2e-status-indicator");
+    // Remove the pre-2.0 floating badge if an old build left one behind.
+    document.getElementById("e2e-status-indicator")?.remove();
 
-    if (!indicator) {
-      indicator = document.createElement("div");
-      indicator.id = "e2e-status-indicator";
-      indicator.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        padding: 6px 12px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: bold;
-        z-index: 999999;
-        pointer-events: none;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        color: #fff;
-      `;
-      document.body.appendChild(indicator);
+    const dot = ensureStatusDot();
+    if (!dot) return;
+
+    const { color, label } = dotAppearance();
+    dot.style.background = color;
+    dot.title = label;
+    dot.setAttribute("aria-label", label);
+
+    // Refresh the menu if it is open.
+    if (document.getElementById(MENU_ID)) {
+      closeStatusMenu();
+      openStatusMenu();
+    }
+  }
+
+  function dotAppearance() {
+    const chat = state.chat;
+    if (chat?.warnRekey) {
+      return { color: "#e5484d", label: "New key offer — verify before accepting" };
+    }
+    if (chat?.enabled && chat?.v2Ready) {
+      return { color: "#4caf50", label: "End-to-end encryption active" };
+    }
+    if (chat?.enabled && chat?.legacyReady) {
+      return { color: "#ff9800", label: "Encryption active (legacy key) — rotate keys" };
+    }
+    if (chat?.enabled) {
+      return { color: "#fdd835", label: "Encryption enabled — handshake needed" };
+    }
+    return { color: "#9e9e9e", label: "Encryption off" };
+  }
+
+  function findHeaderHost() {
+    const candidates = [
+      '[data-sentry-component="ChatInfoFC"]',
+      '[data-sentry-component="ChatInfo"]',
+      '[data-sentry-component="ChatHeaderFC"]',
+      '[data-sentry-component="HeaderFC"]',
+      "main header",
+      "header"
+    ];
+
+    for (const selector of candidates) {
+      const el = document.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function ensureStatusDot() {
+    let dot = document.getElementById(DOT_ID);
+    const host = findHeaderHost();
+
+    if (dot) {
+      const inHeader = !!host && host.contains(dot);
+      const isFallback = dot.dataset.fallback === "1";
+      // Keep it where it is unless it got detached or a header appeared
+      // while we were on the fallback position.
+      if (dot.isConnected && (inHeader || (isFallback && !host))) return dot;
+      dot.remove();
     }
 
-    const enabled = !!state.chat?.enabled;
-    if (enabled && state.chat?.v2Ready) {
-      indicator.textContent = "🔒 E2E READY";
-      indicator.style.background = "#4CAF50";
-    } else if (enabled && state.chat?.legacyReady) {
-      indicator.textContent = "🔒 E2E LEGACY — rotate keys";
-      indicator.style.background = "#FF9800";
-    } else if (enabled) {
-      indicator.textContent = "🟡 E2E ON (NO KEY)";
-      indicator.style.background = "#FF9800";
+    dot = document.createElement("span");
+    dot.id = DOT_ID;
+    dot.style.cssText = `
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin: 0 8px;
+      flex: 0 0 auto;
+      align-self: center;
+      cursor: pointer;
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08);
+      background: #9e9e9e;
+    `;
+
+    if (host) {
+      host.appendChild(dot);
     } else {
-      indicator.textContent = "🔓 E2E OFF";
-      indicator.style.background = "#9E9E9E";
+      dot.dataset.fallback = "1";
+      dot.style.position = "fixed";
+      dot.style.top = "72px";
+      dot.style.right = "16px";
+      dot.style.zIndex = "2147483646";
+      document.body.appendChild(dot);
     }
+
+    dot.addEventListener("click", onDotClick);
+    return dot;
+  }
+
+  function onDotClick(e) {
+    e.stopPropagation();
+    if (document.getElementById(MENU_ID)) {
+      closeStatusMenu();
+    } else {
+      openStatusMenu();
+    }
+  }
+
+  function closeStatusMenu() {
+    document.getElementById(MENU_ID)?.remove();
+    document.removeEventListener("click", onDocumentClickForMenu, true);
+  }
+
+  function onDocumentClickForMenu(e) {
+    const menu = document.getElementById(MENU_ID);
+    if (menu && !menu.contains(e.target) && e.target?.id !== DOT_ID) {
+      closeStatusMenu();
+    }
+  }
+
+  function openStatusMenu() {
+    const dot = document.getElementById(DOT_ID);
+    if (!dot || !state.chatId) return;
+
+    const dark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    const colors = dark
+      ? { bg: "#101827", text: "#e5edf5", muted: "#95a3b8", border: "#233147" }
+      : { bg: "#ffffff", text: "#18212f", muted: "#667085", border: "#dbe3ee" };
+
+    const menu = document.createElement("div");
+    menu.id = MENU_ID;
+
+    const rect = dot.getBoundingClientRect();
+    const top = Math.min(rect.bottom + 8, window.innerHeight - 240);
+    const left = Math.min(Math.max(rect.left - 120, 8), window.innerWidth - 276);
+
+    menu.style.cssText = `
+      position: fixed;
+      top: ${top}px;
+      left: ${left}px;
+      width: 260px;
+      background: ${colors.bg};
+      color: ${colors.text};
+      border: 1px solid ${colors.border};
+      border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+      z-index: 2147483647;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      padding: 14px;
+    `;
+
+    const status = document.createElement("div");
+    status.textContent = dotAppearance().label;
+    status.style.cssText = "font-weight: 600; margin-bottom: 10px;";
+    menu.appendChild(status);
+
+    if (state.chat?.fingerprint) {
+      const fpTitle = document.createElement("div");
+      fpTitle.textContent = "Safety number";
+      fpTitle.style.cssText = `font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: ${colors.muted}; margin-bottom: 4px;`;
+      menu.appendChild(fpTitle);
+
+      const fp = document.createElement("div");
+      fp.textContent = state.chat.fingerprint;
+      fp.style.cssText = "font-family: monospace; font-weight: 700; font-size: 14px; letter-spacing: 0.05em; margin-bottom: 4px; user-select: all;";
+      menu.appendChild(fp);
+
+      const fpHint = document.createElement("div");
+      fpHint.textContent = "Compare with your contact over another channel.";
+      fpHint.style.cssText = `font-size: 11px; color: ${colors.muted}; margin-bottom: 10px;`;
+      menu.appendChild(fpHint);
+    }
+
+    const buttonCss = `
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 8px;
+      border: 1px solid ${colors.border};
+      border-radius: 8px;
+      background: transparent;
+      color: ${colors.text};
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+    `;
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.textContent = state.chat?.enabled ? "Disable encryption" : "Enable encryption";
+    toggleBtn.style.cssText = buttonCss;
+    toggleBtn.addEventListener("click", async () => {
+      await safeSendToBackground("ENCRYPT_TOGGLE", {
+        chatId: state.chatId,
+        enabled: !state.chat?.enabled
+      });
+      closeStatusMenu();
+    });
+    menu.appendChild(toggleBtn);
+
+    const handshakeLabel = handshakeMenuLabel();
+    if (handshakeLabel) {
+      const hsBtn = document.createElement("button");
+      hsBtn.textContent = handshakeLabel.text;
+      hsBtn.disabled = handshakeLabel.disabled;
+      hsBtn.style.cssText = buttonCss + (handshakeLabel.disabled ? "opacity: 0.55; cursor: default;" : "");
+      hsBtn.addEventListener("click", async () => {
+        if (handshakeLabel.disabled) return;
+        closeStatusMenu();
+        const res = await safeSendToBackground("HANDSHAKE_CLICK", { chatId: state.chatId });
+        reportClickFeedback(res);
+      });
+      menu.appendChild(hsBtn);
+    }
+
+    document.body.appendChild(menu);
+    setTimeout(() => {
+      document.addEventListener("click", onDocumentClickForMenu, true);
+    }, 0);
+  }
+
+  function handshakeMenuLabel() {
+    const chat = state.chat;
+    if (chat?.warnRekey) return { text: "Accept new key", disabled: false };
+    if (chat?.pendingStage === "awaiting_click") return { text: "Complete handshake", disabled: false };
+    if (chat?.pendingStage === "hs1_sent") return { text: "Waiting for peer…", disabled: true };
+    if (chat?.v2Ready) return null;
+    return { text: "Start handshake", disabled: false };
+  }
+
+  function reportClickFeedback(res) {
+    if (!res) return;
+
+    if (res.error && !res.success) {
+      showToast(`Handshake failed: ${res.error}`, "error");
+      return;
+    }
+
+    const messages = {
+      sent_hs1: ["Handshake offer sent — your contact must accept it", "info"],
+      sent_hs2_key_established: ["Encryption established — verify the safety number", "success"],
+      key_established: ["Encryption established — verify the safety number", "success"],
+      waiting_for_peer: ["Waiting for your contact to answer the handshake", "info"],
+      already_ready: ["Encryption is already established", "info"]
+    };
+
+    const entry = messages[res.action];
+    if (entry) showToast(entry[0], entry[1]);
   }
 
   function detectTextDirection(text) {
