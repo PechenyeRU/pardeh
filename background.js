@@ -233,14 +233,31 @@ async function decryptOne(chatId, envelope) {
   const parsed = Crypto.parseMessageEnvelope(envelope);
   if (!parsed) return { ok: false, code: "bad_envelope" };
 
-  try {
-    if (parsed.version === 2) {
-      const row = await getChatKeys(chatId, parsed.epoch);
-      if (!row) return { ok: false, code: "no_key" };
-      const key = parsed.dir === row.myLabel ? row.sendKey : row.recvKey;
-      return { ok: true, plaintext: await Crypto.decryptEnvelopeV2(key, parsed) };
+  if (parsed.version === 2) {
+    // The envelope epoch is the *sender's* local counter, which can drift
+    // from ours after partial re-handshakes or a one-sided clear. Try the
+    // hinted epoch first, then every stored epoch for this chat: the GCM
+    // auth tag (with the envelope fields as AAD) picks the right key.
+    const rows = [];
+    const hinted = await getChatKeys(chatId, parsed.epoch);
+    if (hinted) rows.push(hinted);
+    for (const row of await getAllChatKeys(chatId)) {
+      if (row.id !== hinted?.id) rows.push(row);
     }
+    if (!rows.length) return { ok: false, code: "no_key" };
 
+    for (const row of rows) {
+      try {
+        const key = parsed.dir === row.myLabel ? row.sendKey : row.recvKey;
+        return { ok: true, plaintext: await Crypto.decryptEnvelopeV2(key, parsed) };
+      } catch (_) {
+        // wrong epoch key or tampered message; try the next epoch
+      }
+    }
+    return { ok: false, code: "auth_failed" };
+  }
+
+  try {
     const legacyKey = await getLegacyKey(chatId);
     if (!legacyKey) return { ok: false, code: "no_key" };
     return { ok: true, plaintext: await Crypto.decryptLegacy(legacyKey, parsed), legacy: true };
@@ -481,6 +498,14 @@ async function getChatKeys(chatId, epoch) {
 
 function putChatKeys(row) {
   return idbRequest("chatKeys", "readwrite", (s) => s.put(row));
+}
+
+async function getAllChatKeys(chatId) {
+  const rows = await idbRequest("chatKeys", "readonly", (s) =>
+    s.index("chatId").getAll(chatId)
+  );
+  // Newest epochs first: most likely to match current traffic.
+  return (rows || []).sort((a, b) => b.epoch - a.epoch);
 }
 
 async function deleteAllChatKeys(chatId) {
