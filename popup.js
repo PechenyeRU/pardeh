@@ -19,6 +19,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const handshakeBtn = document.getElementById("initiateHandshake");
   const rotateBtn = document.getElementById("rotateKeys");
   const clearBtn = document.getElementById("clearKeys");
+  const statusEl = document.getElementById("popupStatus");
   const logsEl = document.getElementById("logs");
 
   let chatId = null;
@@ -35,6 +36,37 @@ document.addEventListener("DOMContentLoaded", async () => {
   function updateEncryptionLabel(enabled) {
     encryptionStatusEl.textContent = enabled ? "Enabled" : "Disabled";
     setStatusColor(encryptionStatusEl, enabled ? "--success" : "--text-muted");
+  }
+
+  let statusTimer = null;
+
+  function showStatus(msg, type = "info") {
+    log(msg, type);
+    if (!statusEl) return;
+
+    statusEl.textContent = msg;
+    statusEl.classList.remove("hidden");
+    statusEl.style.color =
+      type === "error" ? "var(--danger)" :
+      type === "warn" ? "var(--warning)" :
+      type === "success" ? "var(--success)" : "var(--text-muted)";
+
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => statusEl.classList.add("hidden"), 6000);
+  }
+
+  const ACTION_MESSAGES = {
+    sent_hs1: ["Handshake offer sent — your contact must accept it", "info"],
+    sent_hs1_rotation: ["Rotation started — your contact must accept the new key", "warn"],
+    sent_hs2_key_established: ["Encryption established — compare the safety number", "success"],
+    key_established: ["Encryption established — compare the safety number", "success"],
+    waiting_for_peer: ["Waiting for your contact to answer the handshake", "info"],
+    already_ready: ["Encryption is already established", "info"]
+  };
+
+  function showActionStatus(action) {
+    const entry = ACTION_MESSAGES[action];
+    if (entry) showStatus(entry[0], entry[1]);
   }
 
   function log(msg, type = "info") {
@@ -93,7 +125,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const chatState = await sendToBackground("GET_CHAT_STATE", { chatId });
     if (!chatState.success) {
-      log(`Failed to load state: ${chatState.error}`, "error");
+      showStatus(`Failed to load state: ${chatState.error}`, "error");
       return;
     }
 
@@ -191,7 +223,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else {
       updateEncryptionLabel(!toggle.checked);
       toggle.checked = !toggle.checked;
-      log("Failed to toggle encryption", "error");
+      showStatus(`Failed to toggle encryption: ${res.error}`, "error");
     }
 
     refreshUI();
@@ -200,14 +232,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   handshakeBtn.addEventListener("click", async () => {
     if (!chatId) return;
 
-    log("Initiating handshake...");
-
     const res = await sendToBackground("HANDSHAKE_CLICK", { chatId, tabId });
 
     if (res.success) {
-      log(`Action: ${res.action}`);
+      showActionStatus(res.action);
     } else {
-      log(`Error: ${res.error}`, "error");
+      showStatus(`Handshake failed: ${res.error}`, "error");
     }
 
     setTimeout(refreshUI, 500);
@@ -217,9 +247,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const res = await sendToBackground("ROTATE_KEYS", { chatId, tabId });
 
     if (res.success) {
-      log("Key rotation started — peer must complete the handshake", "warn");
+      showActionStatus(res.action);
     } else {
-      log(`Rotation failed: ${res.error}`, "error");
+      showStatus(`Rotation failed: ${res.error}`, "error");
     }
 
     setTimeout(refreshUI, 500);
@@ -229,9 +259,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const res = await sendToBackground("CLEAR_CHAT_STATE", { chatId });
 
     if (res.success) {
-      log("Cleared keys and state", "warn");
+      showStatus("Keys and state cleared", "warn");
     } else {
-      log("Failed to clear state", "error");
+      showStatus(`Failed to clear state: ${res.error}`, "error");
     }
 
     setTimeout(refreshUI, 300);
@@ -248,7 +278,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         copyFingerprintBtn.textContent = "Copy safety number";
       }, 1500);
     } catch (err) {
-      log(`Copy failed: ${err.message}`, "error");
+      showStatus(`Copy failed: ${err.message}`, "error");
     }
   });
 

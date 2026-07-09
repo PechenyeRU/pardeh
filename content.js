@@ -51,6 +51,8 @@
     decryptQueue: new Map(),
     decryptTimer: null,
 
+    legacyToastShown: false,
+
     handlersAttached: false,
     onRuntimeMessage: null,
     onStorageChanged: null,
@@ -522,12 +524,13 @@
       const activeChatId = state.chatId || extractChatId();
       if (!activeChatId) return;
 
-      await safeSendToBackground("HS_DETECTED", {
+      const res = await safeSendToBackground("HS_DETECTED", {
         chatId: activeChatId,
         kind: handshake.kind,
         version: handshake.version,
         pubB64: handshake.pubB64
       });
+      reportHandshakeFeedback(res);
       return;
     }
 
@@ -643,6 +646,7 @@
     } catch (err) {
       // The original plaintext stays in the input and nothing was sent.
       console.error("[E2E] Encryption failed:", err);
+      showToast("Could not encrypt — the message was NOT sent", "error");
     }
   }
 
@@ -674,6 +678,100 @@
       cancelable: true,
       view: window
     }));
+  }
+
+  // -------------------------------------------------------------------------
+  // User feedback
+  // -------------------------------------------------------------------------
+
+  function reportHandshakeFeedback(res) {
+    if (!res) return;
+
+    if (res.error === "invalid_public_key") {
+      showToast("Invalid handshake message received — ignored", "error");
+      return;
+    }
+
+    if (res.ignored && res.reason === "legacy_handshake") {
+      // History rescans re-detect old markers on every chat open; nag once
+      // per page load at most.
+      if (!state.legacyToastShown) {
+        state.legacyToastShown = true;
+        showToast("Your contact runs an outdated Pardeh version — ask them to update", "warn");
+      }
+      return;
+    }
+
+    if (res.action === "awaiting_click") {
+      showToast(
+        res.warnRekey
+          ? "New encryption key offer received — open Pardeh to verify and accept"
+          : "Encryption key offer received — open Pardeh to accept",
+        "warn"
+      );
+      return;
+    }
+
+    if (res.action === "key_established" || res.action === "sent_hs2_key_established") {
+      showToast("End-to-end encryption established — verify the safety number in Pardeh", "success");
+    }
+  }
+
+  const TOAST_COLORS = {
+    error: "#e5484d",
+    warn: "#b45309",
+    success: "#23a26d",
+    info: "#334155"
+  };
+
+  function showToast(message, kind = "info", durationMs = 6000) {
+    let container = document.getElementById("e2e-toast-container");
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "e2e-toast-container";
+      container.style.cssText = `
+        position: fixed;
+        bottom: 84px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        z-index: 2147483647;
+        pointer-events: none;
+      `;
+      document.body.appendChild(container);
+    }
+
+    const toast = document.createElement("div");
+    toast.textContent = message;
+    toast.style.cssText = `
+      max-width: 360px;
+      padding: 10px 16px;
+      border-radius: 10px;
+      background: ${TOAST_COLORS[kind] || TOAST_COLORS.info};
+      color: #fff;
+      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      text-align: center;
+    `;
+    container.appendChild(toast);
+
+    requestAnimationFrame(() => {
+      toast.style.opacity = "1";
+    });
+
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      setTimeout(() => {
+        toast.remove();
+        if (container.childElementCount === 0) container.remove();
+      }, 300);
+    }, durationMs);
   }
 
   // -------------------------------------------------------------------------
