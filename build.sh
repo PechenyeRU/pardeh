@@ -15,6 +15,8 @@ VERSION="$(python3 -c "import json; print(json.load(open('manifest.json'))['vers
 # Files shipped inside the packages (keep in sync with manifest.json).
 FILES=(
   background.js
+  crypto.js
+  state-machine.js
   content.js
   popup.html
   popup.js
@@ -44,8 +46,10 @@ host_permissions = m.pop("host_permissions", [])
 permissions = [p for p in m.get("permissions", []) if p != "scripting"]
 m["permissions"] = permissions + host_permissions
 
+# The event page loads the shared modules from the manifest; the Chrome
+# service worker pulls them in via importScripts instead.
 m["background"] = {
-    "scripts": ["background.js"],
+    "scripts": ["crypto.js", "state-machine.js", "background.js"],
     "persistent": False,
 }
 

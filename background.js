@@ -3,45 +3,61 @@
 // Firefox exposes promise-based `browser.*`; Chrome exposes `chrome.*`.
 const api = globalThis.browser ?? globalThis.chrome;
 
-console.log("[E2E] Manual-handshake background loaded");
+// Chrome runs this file as a classic service worker and pulls shared
+// modules in via importScripts; the Firefox event page loads them from
+// the manifest background.scripts list instead.
+if (typeof importScripts === "function" && typeof globalThis.PardehCrypto === "undefined") {
+  importScripts("crypto.js", "state-machine.js");
+}
 
-const PENDING_PREFIX = "pending_handshake_";
-const CHAT_KEY_PREFIX = "chat_key_";
+const Crypto = globalThis.PardehCrypto;
+const SM = globalThis.PardehStateMachine;
+
 const ENCRYPTION_PREFIX = "encryption_enabled_";
+const META_PREFIX = "chat_meta_";
+const LEGACY_KEY_PREFIX = "chat_key_";
+const PEER_LEGACY_PREFIX = "peer_legacy_";
 const HANDSHAKE_TTL_MS = 10 * 60 * 1000;
+const CONTENT_SCRIPTS = ["crypto.js", "content.js"];
+
+// ---------------------------------------------------------------------------
+// Message router
+// ---------------------------------------------------------------------------
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    const tabId = sender.tab?.id ?? message.tabId ?? null;
+
     switch (message.type) {
-      case "GET_CHAT_ID":
-        return { success: true, chatId: null };
-
-      case "CHAT_ID_CHANGED":
-        return { success: true };
-
       case "ENCRYPT_TOGGLE":
-        return await handleEncryptionToggle(message.chatId, message.enabled);
+        return handleEncryptionToggle(message.chatId, message.enabled);
 
-      case "GET_ENCRYPTION_STATUS":
-        return await handleGetEncryptionStatus(message.chatId);
-
-      case "GET_SHARED_KEY":
-        return await handleGetSharedKey(message.chatId);
-
-      case "CLEAR_CHAT_STATE":
-        return await handleClearChatState(message.chatId);
-
-      case "GET_PENDING_HANDSHAKE":
-        return await handleGetPendingHandshake(message.chatId);
-
-      case "HANDSHAKE_MARK_HS1_DETECTED":
-        return await handleMarkHs1Detected(message.chatId, message.payload);
-
-      case "HANDSHAKE_MARK_HS2_DETECTED":
-        return await handleMarkHs2Detected(message.chatId, message.payload);
+      case "GET_CHAT_STATE":
+        return handleGetChatState(message.chatId);
 
       case "HANDSHAKE_CLICK":
-        return await handleHandshakeClick(message.chatId, sender.tab?.id);
+        return withChatLock(message.chatId, () =>
+          handleHandshakeClick(message.chatId, tabId)
+        );
+
+      case "ROTATE_KEYS":
+        return withChatLock(message.chatId, () =>
+          handleRotateKeys(message.chatId, tabId)
+        );
+
+      case "HS_DETECTED":
+        return withChatLock(message.chatId, () =>
+          handleHandshakeDetected(message.chatId, message.kind, message.version, message.pubB64, tabId)
+        );
+
+      case "ENCRYPT_MESSAGE":
+        return handleEncryptMessage(message.chatId, message.text);
+
+      case "DECRYPT_BATCH":
+        return handleDecryptBatch(message.chatId, message.envelopes);
+
+      case "CLEAR_CHAT_STATE":
+        return withChatLock(message.chatId, () => handleClearChatState(message.chatId));
 
       default:
         return { success: false, error: "Unknown message type" };
@@ -56,224 +72,442 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
 async function handleEncryptionToggle(chatId, enabled) {
   if (!chatId) return { success: false, error: "Missing chatId" };
   await api.storage.local.set({ [`${ENCRYPTION_PREFIX}${chatId}`]: !!enabled });
   return { success: true };
 }
 
-async function handleGetEncryptionStatus(chatId) {
-  if (!chatId) return { enabled: false, error: "Missing chatId" };
-  const result = await api.storage.local.get([`${ENCRYPTION_PREFIX}${chatId}`]);
-  return { enabled: !!result[`${ENCRYPTION_PREFIX}${chatId}`] };
+async function handleGetChatState(chatId) {
+  if (!chatId) return { success: false, error: "Missing chatId" };
+
+  const [stored, pending] = await Promise.all([
+    api.storage.local.get([
+      `${ENCRYPTION_PREFIX}${chatId}`,
+      `${META_PREFIX}${chatId}`,
+      `${LEGACY_KEY_PREFIX}${chatId}`,
+      `${PEER_LEGACY_PREFIX}${chatId}`
+    ]),
+    getPending(chatId)
+  ]);
+
+  const meta = stored[`${META_PREFIX}${chatId}`] || null;
+
+  return {
+    success: true,
+    enabled: !!stored[`${ENCRYPTION_PREFIX}${chatId}`],
+    v2Ready: !!meta,
+    legacyReady: !!stored[`${LEGACY_KEY_PREFIX}${chatId}`],
+    epoch: meta?.epoch ?? 0,
+    fingerprint: meta?.fingerprint ?? null,
+    establishedAt: meta?.establishedAt ?? null,
+    pendingStage: pending?.stage ?? null,
+    warnRekey: !!pending?.warnRekey,
+    peerLegacy: !!stored[`${PEER_LEGACY_PREFIX}${chatId}`]
+  };
 }
 
-async function handleGetSharedKey(chatId) {
-  if (!chatId) return { key: null, error: "Missing chatId" };
-  const result = await api.storage.local.get([`${CHAT_KEY_PREFIX}${chatId}`]);
-  return { key: result[`${CHAT_KEY_PREFIX}${chatId}`] || null };
+async function handleHandshakeClick(chatId, tabId) {
+  if (!chatId) return { success: false, error: "Missing chatId" };
+
+  const context = await loadContext(chatId);
+  const act = SM.onHandshakeClick(context);
+
+  switch (act.action) {
+    case "send_hs1":
+      return sendHs1(chatId, tabId);
+
+    case "respond_hs2":
+      return respondHs2(chatId, tabId, context, act);
+
+    case "wait_for_hs2":
+      return { success: true, action: "waiting_for_peer", reason: act.reason };
+
+    case "already_ready":
+      return { success: true, action: "already_ready" };
+
+    default:
+      return { success: false, error: `Unhandled action: ${act.action}` };
+  }
+}
+
+async function handleRotateKeys(chatId, tabId) {
+  if (!chatId) return { success: false, error: "Missing chatId" };
+
+  // Rotation is an explicit fresh handshake. The current epoch keys stay
+  // in place (and keep decrypting history) until the new epoch finalizes.
+  await deletePending(chatId);
+  return sendHs1(chatId, tabId, { rotation: true });
+}
+
+async function handleHandshakeDetected(chatId, kind, version, pubB64, tabId) {
+  if (!chatId || !pubB64 || (kind !== 1 && kind !== 2)) {
+    return { success: false, error: "Missing chatId, kind or pubB64" };
+  }
+
+  if (version === 1) {
+    // Peer runs a pre-v2 build: no KDF, no directional keys. Never answer
+    // a legacy handshake; flag it so the UI can ask the peer to update.
+    await api.storage.local.set({ [`${PEER_LEGACY_PREFIX}${chatId}`]: Date.now() });
+    return { success: true, ignored: true, reason: "legacy_handshake" };
+  }
+
+  try {
+    Crypto.validateRawP256PublicKeyB64(pubB64);
+  } catch (err) {
+    return { success: false, error: "invalid_public_key", detail: String(err?.message || err) };
+  }
+
+  const context = await loadContext(chatId);
+  const act = kind === 1
+    ? SM.onHs1Detected(context, pubB64)
+    : SM.onHs2Detected(context, pubB64);
+
+  switch (act.action) {
+    case "ignore":
+      return { success: true, ignored: true, reason: act.reason };
+
+    case "store_peer_hs1":
+      await putPending(chatId, { ...context.pending, peerHs1B64: act.peerPubB64 });
+      return { success: true, action: "stored_peer_hs1" };
+
+    case "store_awaiting_click":
+      await putPending(chatId, {
+        stage: "awaiting_click",
+        peerHs1B64: act.peerPubB64,
+        warnRekey: act.warnRekey,
+        createdAt: Date.now()
+      });
+      return { success: true, action: "awaiting_click", warnRekey: act.warnRekey };
+
+    case "respond_hs2":
+      return respondHs2(chatId, tabId, context, act);
+
+    case "finalize":
+      return finalizeKey(chatId, context, act.peerPubB64);
+
+    default:
+      return { success: false, error: `Unhandled action: ${act.action}` };
+  }
+}
+
+async function handleEncryptMessage(chatId, text) {
+  if (!chatId || !text) return { success: false, error: "Missing chatId or text" };
+
+  const meta = await getMeta(chatId);
+  if (meta) {
+    const row = await getChatKeys(chatId, meta.epoch);
+    if (!row) {
+      return { success: false, error: "key_missing", detail: "Key store lost; redo the handshake" };
+    }
+    const envelope = await Crypto.encryptEnvelope(row.sendKey, row.epoch, row.myLabel, text);
+    return { success: true, envelope };
+  }
+
+  const legacyKey = await getLegacyKey(chatId);
+  if (legacyKey) {
+    const envelope = await Crypto.encryptLegacy(legacyKey, text);
+    return { success: true, envelope, legacy: true };
+  }
+
+  return { success: false, error: "no_key" };
+}
+
+async function handleDecryptBatch(chatId, envelopes) {
+  if (!chatId || !Array.isArray(envelopes)) {
+    return { success: false, error: "Missing chatId or envelopes" };
+  }
+
+  const results = [];
+  for (const envelope of envelopes.slice(0, 200)) {
+    results.push(await decryptOne(chatId, envelope));
+  }
+  return { success: true, results };
+}
+
+async function decryptOne(chatId, envelope) {
+  const parsed = Crypto.parseMessageEnvelope(envelope);
+  if (!parsed) return { ok: false, code: "bad_envelope" };
+
+  try {
+    if (parsed.version === 2) {
+      const row = await getChatKeys(chatId, parsed.epoch);
+      if (!row) return { ok: false, code: "no_key" };
+      const key = parsed.dir === row.myLabel ? row.sendKey : row.recvKey;
+      return { ok: true, plaintext: await Crypto.decryptEnvelopeV2(key, parsed) };
+    }
+
+    const legacyKey = await getLegacyKey(chatId);
+    if (!legacyKey) return { ok: false, code: "no_key" };
+    return { ok: true, plaintext: await Crypto.decryptLegacy(legacyKey, parsed), legacy: true };
+  } catch (_) {
+    return { ok: false, code: "auth_failed" };
+  }
 }
 
 async function handleClearChatState(chatId) {
   if (!chatId) return { success: false, error: "Missing chatId" };
 
   await api.storage.local.remove([
-    `${CHAT_KEY_PREFIX}${chatId}`,
-    `${ENCRYPTION_PREFIX}${chatId}`
+    `${ENCRYPTION_PREFIX}${chatId}`,
+    `${META_PREFIX}${chatId}`,
+    `${LEGACY_KEY_PREFIX}${chatId}`,
+    `${PEER_LEGACY_PREFIX}${chatId}`
   ]);
-  await api.storage.session.remove([pendingKey(chatId)]);
+  legacyKeyCache.delete(chatId);
+
+  await deletePending(chatId);
+  await deleteAllChatKeys(chatId);
 
   return { success: true };
 }
 
-async function handleGetPendingHandshake(chatId) {
-  if (!chatId) return { success: false, error: "Missing chatId" };
-  await clearExpiredPendingHandshake(chatId);
-  return { success: true, pending: await getPendingHandshake(chatId) };
+// ---------------------------------------------------------------------------
+// Handshake actions
+// ---------------------------------------------------------------------------
+
+async function sendHs1(chatId, tabId, { rotation = false } = {}) {
+  const keyPair = await Crypto.generateEcdhKeyPair();
+  const ourPubB64 = await Crypto.exportRawPublicKeyB64(keyPair.publicKey);
+
+  // Deliver first, persist after: if delivery fails nothing is stored and
+  // the user simply retries the click from a clean state.
+  await sendChatMessage(tabId, Crypto.buildHandshakeMessage(1, ourPubB64));
+
+  await putPending(chatId, {
+    stage: "hs1_sent",
+    ourPubB64,
+    privateKey: keyPair.privateKey,
+    createdAt: Date.now()
+  });
+
+  return { success: true, action: rotation ? "sent_hs1_rotation" : "sent_hs1" };
 }
 
-async function handleMarkHs1Detected(chatId, payload) {
-  if (!chatId || !payload?.legacyRawKeyB64) {
-    return { success: false, error: "Missing chatId or payload.legacyRawKeyB64" };
+async function respondHs2(chatId, tabId, context, act) {
+  Crypto.validateRawP256PublicKeyB64(act.peerPubB64);
+  const peerPublicKey = await Crypto.importRawPublicKey(act.peerPubB64);
+
+  let privateKey;
+  let ourPubB64;
+  if (act.reuseKeypair) {
+    privateKey = context.pending.privateKey;
+    ourPubB64 = context.pending.ourPubB64;
+  } else {
+    const keyPair = await Crypto.generateEcdhKeyPair();
+    privateKey = keyPair.privateKey;
+    ourPubB64 = await Crypto.exportRawPublicKeyB64(keyPair.publicKey);
   }
 
-  await clearExpiredPendingHandshake(chatId);
-  const pending = await getPendingHandshake(chatId);
+  // Deliver HS2 before persisting the epoch so a failed delivery leaves a
+  // retryable state. A crash between the two steps loses the epoch and
+  // requires a key rotation; that window is accepted for simplicity.
+  await sendChatMessage(tabId, Crypto.buildHandshakeMessage(2, ourPubB64));
 
-  if (pending?.role === "alice" && pending.legacyRawPublicKeyB64 === payload.legacyRawKeyB64) {
-    return { success: true, ignored: true, reason: "own_hs1_echo" };
-  }
-
-  const next = {
-    ...(pending || {}),
-    detectedHs1KeyB64: payload.legacyRawKeyB64,
-    detectedHs1At: Date.now(),
-    createdAt: pending?.createdAt || Date.now()
-  };
-
-  await setPendingHandshake(chatId, next);
-  return { success: true, pending: next };
+  const established = await establishEpoch(chatId, privateKey, peerPublicKey, ourPubB64, act.peerPubB64);
+  return { success: true, action: "sent_hs2_key_established", ...established };
 }
 
-async function handleMarkHs2Detected(chatId, payload) {
-  if (!chatId || !payload?.legacyRawKeyB64) {
-    return { success: false, error: "Missing chatId or payload.legacyRawKeyB64" };
-  }
+async function finalizeKey(chatId, context, peerPubB64) {
+  Crypto.validateRawP256PublicKeyB64(peerPubB64);
+  const peerPublicKey = await Crypto.importRawPublicKey(peerPubB64);
 
-  await clearExpiredPendingHandshake(chatId);
-  const pending = await getPendingHandshake(chatId);
-
-  if (pending?.role === "bob" && pending.legacyRawPublicKeyB64 === payload.legacyRawKeyB64) {
-    return { success: true, ignored: true, reason: "own_hs2_echo" };
-  }
-
-  const next = {
-    ...(pending || {}),
-    detectedHs2KeyB64: payload.legacyRawKeyB64,
-    detectedHs2At: Date.now(),
-    createdAt: pending?.createdAt || Date.now()
-  };
-
-  await setPendingHandshake(chatId, next);
-  return { success: true, pending: next };
+  const established = await establishEpoch(
+    chatId,
+    context.pending.privateKey,
+    peerPublicKey,
+    context.pending.ourPubB64,
+    peerPubB64
+  );
+  return { success: true, action: "key_established", ...established };
 }
 
-async function handleHandshakeClick(chatId, senderTabId) {
-  if (!chatId) return { success: false, error: "Missing chatId" };
+async function establishEpoch(chatId, privateKey, peerPublicKey, ourPubB64, peerPubB64) {
+  const meta = await getMeta(chatId);
+  const epoch = (meta?.epoch ?? 0) + 1;
 
-  await clearExpiredPendingHandshake(chatId);
-  const pending = await getPendingHandshake(chatId);
-  const tabId = senderTabId ?? await getActiveBaleTabId();
-  if (!tabId) return { success: false, error: "No Bale tab found" };
+  const { sendKey, recvKey, myLabel } = await Crypto.deriveDirectionalKeys(
+    privateKey,
+    peerPublicKey,
+    ourPubB64,
+    peerPubB64
+  );
+  const fingerprint = await Crypto.computeFingerprint(ourPubB64, peerPubB64);
 
-  // Step 1: nothing yet => send HS1
-  if (!pending) {
-    const keyPair = await generateKeyPair();
-    const publicKeyRawB64 = await exportLegacyRawPublicKey(keyPair.publicKey);
-    const privateKeyJwk = await exportPrivateKeyJwk(keyPair.privateKey);
+  await putChatKeys({
+    id: `${chatId}:${epoch}`,
+    chatId,
+    epoch,
+    myLabel,
+    sendKey,
+    recvKey,
+    createdAt: Date.now()
+  });
 
-    await setPendingHandshake(chatId, {
-      role: "alice",
-      stage: "hs1_sent",
-      legacyRawPublicKeyB64: publicKeyRawB64,
-      privateKeyJwk,
-      createdAt: Date.now()
+  await api.storage.local.set({
+    [`${META_PREFIX}${chatId}`]: {
+      v: 2,
+      epoch,
+      myLabel,
+      ourPubB64,
+      peerPubB64,
+      fingerprint,
+      establishedAt: Date.now()
+    }
+  });
+
+  await deletePending(chatId);
+
+  return { epoch, fingerprint };
+}
+
+// ---------------------------------------------------------------------------
+// State access
+// ---------------------------------------------------------------------------
+
+async function loadContext(chatId) {
+  let pending = await getPending(chatId);
+  if (pending && SM.isExpired(pending, Date.now(), HANDSHAKE_TTL_MS)) {
+    await deletePending(chatId);
+    pending = null;
+  }
+  const keyMeta = await getMeta(chatId);
+  return { pending, keyMeta };
+}
+
+async function getMeta(chatId) {
+  const stored = await api.storage.local.get([`${META_PREFIX}${chatId}`]);
+  return stored[`${META_PREFIX}${chatId}`] || null;
+}
+
+const legacyKeyCache = new Map();
+
+function getLegacyKey(chatId) {
+  if (!legacyKeyCache.has(chatId)) {
+    const promise = (async () => {
+      const stored = await api.storage.local.get([`${LEGACY_KEY_PREFIX}${chatId}`]);
+      const keyB64 = stored[`${LEGACY_KEY_PREFIX}${chatId}`];
+      return keyB64 ? Crypto.importLegacyAesKey(keyB64) : null;
+    })();
+    promise.catch(() => legacyKeyCache.delete(chatId));
+    legacyKeyCache.set(chatId, promise);
+  }
+  return legacyKeyCache.get(chatId);
+}
+
+// ---------------------------------------------------------------------------
+// Per-chat mutex: handshake handlers for the same chat run serialized, so
+// concurrent clicks or overlapping detections cannot interleave state
+// reads and writes (a rapid double click would otherwise send two HS1
+// with two different keypairs).
+// ---------------------------------------------------------------------------
+
+const chatLocks = new Map();
+
+function withChatLock(chatId, fn) {
+  const prev = chatLocks.get(chatId) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const guard = run.catch(() => {});
+  chatLocks.set(chatId, guard);
+  guard.then(() => {
+    if (chatLocks.get(chatId) === guard) chatLocks.delete(chatId);
+  });
+  return run;
+}
+
+// ---------------------------------------------------------------------------
+// IndexedDB key store. CryptoKey objects are structured-cloneable, so the
+// non-extractable private keys and AES keys are persisted as-is: they
+// survive service worker and browser restarts but can never be exported,
+// unlike the JWK-in-storage approach this replaces.
+//   "pending"  chatId -> in-flight handshake (incl. ECDH private key)
+//   "chatKeys" `${chatId}:${epoch}` -> directional AES keys per epoch
+// ---------------------------------------------------------------------------
+
+const DB_NAME = "pardeh-keys";
+let dbPromise = null;
+
+function openDb() {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        db.createObjectStore("pending", { keyPath: "chatId" });
+        const keys = db.createObjectStore("chatKeys", { keyPath: "id" });
+        keys.createIndex("chatId", "chatId", { unique: false });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
     });
-
-    await sendMessageToTab(tabId, {
-      type: "SEND_CHAT_MESSAGE",
-      text: `[[E2EHS1:${publicKeyRawB64}]]`
+    dbPromise.catch(() => {
+      dbPromise = null;
     });
-
-    return { success: true, action: "sent_hs1" };
   }
-
-  // Step 2: peer HS1 detected, answer with HS2 and save our side key
-  if (pending.detectedHs1KeyB64 && !pending.detectedHs2KeyB64 && pending.stage !== "hs2_sent") {
-    const theirPublicKeyB64 = pending.detectedHs1KeyB64;
-
-    validateRawP256PublicKeyB64(theirPublicKeyB64);
-    const theirPublicKey = await importLegacyRawPublicKey(theirPublicKeyB64);
-
-    const keyPair = await generateKeyPair();
-    const ourPublicKeyRawB64 = await exportLegacyRawPublicKey(keyPair.publicKey);
-    const privateKeyJwk = await exportPrivateKeyJwk(keyPair.privateKey);
-
-    const sharedSecret = await deriveSharedSecret(keyPair.privateKey, theirPublicKey);
-    const aesKey = await deriveAESKey(sharedSecret);
-    const aesKeyB64 = await exportAesKey(aesKey);
-
-    await saveSharedKey(chatId, aesKeyB64);
-
-    const next = {
-      role: "bob",
-      stage: "hs2_sent",
-      legacyRawPublicKeyB64: ourPublicKeyRawB64,
-      privateKeyJwk,
-      peerHs1KeyB64: theirPublicKeyB64,
-      createdAt: pending.createdAt || Date.now(),
-      detectedHs1KeyB64: theirPublicKeyB64,
-      detectedHs1At: pending.detectedHs1At || Date.now()
-    };
-
-    await setPendingHandshake(chatId, next);
-
-    await sendMessageToTab(tabId, {
-      type: "SEND_CHAT_MESSAGE",
-      text: `[[E2EHS2:${ourPublicKeyRawB64}]]`
-    });
-
-    return { success: true, action: "sent_hs2_and_saved_key" };
-  }
-
-  // Step 3: alice sees HS2, finalize shared key
-  if (
-    pending.role === "alice" &&
-    pending.stage === "hs1_sent" &&
-    pending.privateKeyJwk &&
-    pending.detectedHs2KeyB64
-  ) {
-    const privateKey = await importPrivateKeyJwk(pending.privateKeyJwk);
-    const theirPublicKeyB64 = pending.detectedHs2KeyB64;
-
-    validateRawP256PublicKeyB64(theirPublicKeyB64);
-    const theirPublicKey = await importLegacyRawPublicKey(theirPublicKeyB64);
-
-    const sharedSecret = await deriveSharedSecret(privateKey, theirPublicKey);
-    const aesKey = await deriveAESKey(sharedSecret);
-    const aesKeyB64 = await exportAesKey(aesKey);
-
-    await saveSharedKey(chatId, aesKeyB64);
-    await clearPendingHandshake(chatId);
-
-    return { success: true, action: "finalized_key_from_hs2" };
-  }
-
-  // already ready
-  const existingKey = await handleGetSharedKey(chatId);
-  if (existingKey?.key) {
-    return { success: true, action: "already_ready" };
-  }
-
-  return {
-    success: false,
-    error: "No valid manual handshake action available",
-    pending
-  };
+  return dbPromise;
 }
 
-function pendingKey(chatId) {
-  return `${PENDING_PREFIX}${chatId}`;
+async function idbRequest(storeName, mode, operate) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const req = operate(tx.objectStore(storeName));
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
-async function setPendingHandshake(chatId, state) {
-  await api.storage.session.set({ [pendingKey(chatId)]: state });
+async function getPending(chatId) {
+  const row = await idbRequest("pending", "readonly", (s) => s.get(chatId));
+  return row || null;
 }
 
-async function getPendingHandshake(chatId) {
-  const result = await api.storage.session.get([pendingKey(chatId)]);
-  return result[pendingKey(chatId)] || null;
+function putPending(chatId, pending) {
+  return idbRequest("pending", "readwrite", (s) => s.put({ ...pending, chatId }));
 }
 
-async function clearPendingHandshake(chatId) {
-  await api.storage.session.remove([pendingKey(chatId)]);
+function deletePending(chatId) {
+  return idbRequest("pending", "readwrite", (s) => s.delete(chatId));
 }
 
-async function clearExpiredPendingHandshake(chatId) {
-  const pending = await getPendingHandshake(chatId);
-  if (!pending?.createdAt) return;
+async function getChatKeys(chatId, epoch) {
+  const row = await idbRequest("chatKeys", "readonly", (s) => s.get(`${chatId}:${epoch}`));
+  return row || null;
+}
 
-  if (Date.now() - pending.createdAt > HANDSHAKE_TTL_MS) {
-    await clearPendingHandshake(chatId);
+function putChatKeys(row) {
+  return idbRequest("chatKeys", "readwrite", (s) => s.put(row));
+}
+
+async function deleteAllChatKeys(chatId) {
+  const keys = await idbRequest("chatKeys", "readonly", (s) =>
+    s.index("chatId").getAllKeys(chatId)
+  );
+  for (const key of keys || []) {
+    await idbRequest("chatKeys", "readwrite", (s) => s.delete(key));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tab plumbing
+// ---------------------------------------------------------------------------
+
+async function sendChatMessage(tabId, text) {
+  const targetTabId = tabId ?? (await getActiveBaleTabId());
+  if (!targetTabId) throw new Error("No Bale tab found");
+  await sendMessageToTab(targetTabId, { type: "SEND_CHAT_MESSAGE", text });
 }
 
 async function getActiveBaleTabId() {
-  const baleTabs = await api.tabs.query({ url: "*://web.bale.ai/*" });
-  if (baleTabs.length > 0) return baleTabs[0].id ?? null;
+  const active = await api.tabs.query({ active: true, currentWindow: true, url: "*://web.bale.ai/*" });
+  if (active.length > 0) return active[0].id ?? null;
 
-  const tabs = await api.tabs.query({ active: true, currentWindow: true });
-  return tabs[0]?.id ?? null;
+  const any = await api.tabs.query({ url: "*://web.bale.ai/*" });
+  return any[0]?.id ?? null;
 }
 
 async function sendMessageToTab(tabId, message, retries = 2) {
@@ -298,108 +532,21 @@ async function ensureContentScript(tabId) {
     return;
   } catch (_) {}
 
-  await api.scripting.executeScript({
-    target: { tabId },
-    files: ["content.js"]
-  });
+  if (api.scripting?.executeScript) {
+    await api.scripting.executeScript({
+      target: { tabId },
+      files: CONTENT_SCRIPTS
+    });
+  } else {
+    // Firefox MV2 fallback.
+    for (const file of CONTENT_SCRIPTS) {
+      await api.tabs.executeScript(tabId, { file });
+    }
+  }
 
   await sleep(250);
 }
 
-async function generateKeyPair() {
-  return crypto.subtle.generateKey(
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveKey", "deriveBits"]
-  );
-}
-
-async function exportLegacyRawPublicKey(publicKey) {
-  const exported = await crypto.subtle.exportKey("raw", publicKey);
-  return arrayBufferToBase64(exported);
-}
-
-async function importLegacyRawPublicKey(publicKeyB64) {
-  const keyData = base64ToArrayBuffer(publicKeyB64);
-  return crypto.subtle.importKey(
-    "raw",
-    keyData,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    []
-  );
-}
-
-async function exportPrivateKeyJwk(privateKey) {
-  return crypto.subtle.exportKey("jwk", privateKey);
-}
-
-async function importPrivateKeyJwk(jwk) {
-  return crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveBits", "deriveKey"]
-  );
-}
-
-async function deriveSharedSecret(privateKey, publicKey) {
-  return crypto.subtle.deriveBits(
-    { name: "ECDH", public: publicKey },
-    privateKey,
-    256
-  );
-}
-
-async function deriveAESKey(sharedSecret) {
-  return crypto.subtle.importKey(
-    "raw",
-    sharedSecret,
-    { name: "AES-GCM" },
-    true,
-    ["encrypt", "decrypt"]
-  );
-}
-
-async function exportAesKey(key) {
-  const exported = await crypto.subtle.exportKey("raw", key);
-  return arrayBufferToBase64(exported);
-}
-
-async function saveSharedKey(chatId, keyB64) {
-  await api.storage.local.set({ [`${CHAT_KEY_PREFIX}${chatId}`]: keyB64 });
-}
-
-function validateRawP256PublicKeyB64(publicKeyB64) {
-  const bytes = new Uint8Array(base64ToArrayBuffer(publicKeyB64));
-  if (bytes.length !== 65) {
-    throw new Error(`Invalid raw key length: ${bytes.length}, expected 65`);
-  }
-  if (bytes[0] !== 0x04) {
-    throw new Error(`Invalid EC point prefix: ${bytes[0]}, expected 4`);
-  }
-  return true;
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64) {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes.buffer;
 }

@@ -4,9 +4,16 @@
   // Firefox exposes promise-based `browser.*`; Chrome exposes `chrome.*`.
   const api = globalThis.browser ?? globalThis.chrome;
 
+  // Envelope parsing comes from crypto.js (loaded before this file); no key
+  // material or crypto operations live in the page context — encryption and
+  // decryption happen in the background script.
+  const Crypto = globalThis.PardehCrypto;
+
   const INSTANCE_KEY = "__e2eExtensionInstance";
-  const CHAT_KEY_PREFIX = "chat_key_";
   const ENCRYPTION_PREFIX = "encryption_enabled_";
+  const META_PREFIX = "chat_meta_";
+  const LEGACY_KEY_PREFIX = "chat_key_";
+  const PEER_LEGACY_PREFIX = "peer_legacy_";
 
   try {
     if (window[INSTANCE_KEY]?.cleanup) {
@@ -19,8 +26,9 @@
     initialized: false,
 
     chatId: null,
-    encryptionEnabled: false,
-    sharedKey: null,
+    // Snapshot of GET_CHAT_STATE: { enabled, v2Ready, legacyReady, epoch,
+    // fingerprint, pendingStage, warnRekey, peerLegacy }
+    chat: null,
 
     messageObserver: null,
     domObserver: null,
@@ -36,6 +44,12 @@
 
     processedCache: new Set(),
     maxProcessedCache: 500,
+
+    // envelope -> { ok, plaintext?, code? }; cleared when keys change.
+    plaintextCache: new Map(),
+    maxPlaintextCache: 300,
+    decryptQueue: new Map(),
+    decryptTimer: null,
 
     handlersAttached: false,
     onRuntimeMessage: null,
@@ -85,7 +99,7 @@
     ]
   };
 
-  console.log("[E2E] Manual-handshake content script booting");
+  console.log("[E2E] Pardeh content script booting");
 
   bootstrap();
 
@@ -123,6 +137,7 @@
       if (state.urlWatchInterval) clearInterval(state.urlWatchInterval);
       if (state.attachRetryTimer) clearTimeout(state.attachRetryTimer);
       if (state.initTimer) clearTimeout(state.initTimer);
+      if (state.decryptTimer) clearTimeout(state.decryptTimer);
 
       if (state.messageObserver) state.messageObserver.disconnect();
       if (state.domObserver) state.domObserver.disconnect();
@@ -165,13 +180,6 @@
           sendResponse({ chatId: state.chatId });
           return true;
 
-        case "UPDATE_ENCRYPTION_STATUS":
-          state.encryptionEnabled = !!message.enabled;
-          reloadChatState()
-            .then(() => sendResponse({ success: true }))
-            .catch((err) => sendResponse({ success: false, error: String(err?.message || err) }));
-          return true;
-
         case "SEND_CHAT_MESSAGE":
           handleSendChatMessageCommand(message.text)
             .then(() => sendResponse({ success: true }))
@@ -191,10 +199,13 @@
     state.onStorageChanged = (changes, areaName) => {
       if (state.destroyed || areaName !== "local" || !state.chatId) return;
 
-      const encryptionStorageKey = `${ENCRYPTION_PREFIX}${state.chatId}`;
-      const sharedKeyStorageKey = `${CHAT_KEY_PREFIX}${state.chatId}`;
-
-      if (!changes[encryptionStorageKey] && !changes[sharedKeyStorageKey]) return;
+      const watched = [
+        `${ENCRYPTION_PREFIX}${state.chatId}`,
+        `${META_PREFIX}${state.chatId}`,
+        `${LEGACY_KEY_PREFIX}${state.chatId}`,
+        `${PEER_LEGACY_PREFIX}${state.chatId}`
+      ];
+      if (!watched.some((key) => changes[key])) return;
 
       reloadChatState().catch((err) => {
         console.error("[E2E] Failed to sync chat state from storage:", err);
@@ -206,28 +217,43 @@
 
   async function reloadChatState() {
     if (!state.chatId || state.destroyed) {
-      state.encryptionEnabled = false;
-      state.sharedKey = null;
+      state.chat = null;
       updateEncryptionStatusUI();
       return;
     }
 
-    const status = await safeSendToBackground("GET_ENCRYPTION_STATUS", { chatId: state.chatId });
-    state.encryptionEnabled = !!status?.enabled;
+    const hadKeys = canDecrypt();
+    const res = await safeSendToBackground("GET_CHAT_STATE", { chatId: state.chatId });
+    state.chat = res?.success ? res : null;
 
-    const keyResult = await safeSendToBackground("GET_SHARED_KEY", { chatId: state.chatId });
-    if (keyResult?.key) {
-      try {
-        state.sharedKey = await importAESKey(keyResult.key);
-      } catch (err) {
-        console.error("[E2E] Failed to import AES key:", err);
-        state.sharedKey = null;
-      }
-    } else {
-      state.sharedKey = null;
+    if (!hadKeys && canDecrypt()) {
+      retryFailedDecrypts();
     }
 
     updateEncryptionStatusUI();
+  }
+
+  function canDecrypt() {
+    return !!(state.chat?.v2Ready || state.chat?.legacyReady);
+  }
+
+  function canEncrypt() {
+    return !!(state.chat?.enabled && canDecrypt());
+  }
+
+  // A key just became available: clear stale results and re-run messages
+  // that previously rendered as decryption failures.
+  function retryFailedDecrypts() {
+    state.plaintextCache.clear();
+
+    const failed = document.querySelectorAll('[data-e2e-decrypted="error"]');
+    for (const el of failed) {
+      delete el.dataset.e2eDecrypted;
+    }
+
+    scanExistingMessages().catch((err) => {
+      console.error("[E2E] retryFailedDecrypts failed:", err);
+    });
   }
 
   function installRouteChangeHooks() {
@@ -287,8 +313,9 @@
 
     state.chatId = newChatId;
     state.processedCache.clear();
+    state.plaintextCache.clear();
+    state.decryptQueue.clear();
 
-    await safeSendToBackground("CHAT_ID_CHANGED", { chatId: newChatId });
     await reloadChatState();
 
     if (state.messageObserver) {
@@ -382,7 +409,7 @@
       if (!text) return;
       if (isHandshakeText(text)) return;
 
-      if (state.encryptionEnabled && state.sharedKey) {
+      if (canEncrypt()) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation?.();
@@ -398,7 +425,7 @@
       if (!text) return;
       if (isHandshakeText(text)) return;
 
-      if (state.encryptionEnabled && state.sharedKey) {
+      if (canEncrypt()) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation?.();
@@ -481,88 +508,114 @@
   async function processNewMessage(messageElement) {
     if (state.destroyed) return;
 
-    const payload = extractMessagePayload(messageElement);
-    if (!payload?.text) return;
+    const fullText = messageElement.textContent?.trim();
+    if (!fullText) return;
 
-    const originalText = payload.text.trim();
-    const cacheKey = buildProcessedKey(originalText);
-    if (cacheKey && state.processedCache.has(cacheKey)) return;
-
-    if (originalText.startsWith("E2EHS1:") || originalText.startsWith("[[E2EHS1:")) {
+    // Handshake markers: report to the background state machine once per
+    // (chat, marker) — echoes and duplicates are also filtered over there.
+    const handshake = Crypto.parseHandshakeText(fullText);
+    if (handshake) {
+      const cacheKey = buildProcessedKey(`hs${handshake.kind}:${handshake.pubB64}`);
+      if (cacheKey && state.processedCache.has(cacheKey)) return;
       markProcessed(cacheKey);
-
-      const rawKey = extractLegacyHandshakeKey(originalText, "E2EHS1:");
-      if (!rawKey) return;
 
       const activeChatId = state.chatId || extractChatId();
       if (!activeChatId) return;
 
-      await safeSendToBackground("HANDSHAKE_MARK_HS1_DETECTED", {
+      await safeSendToBackground("HS_DETECTED", {
         chatId: activeChatId,
-        payload: { legacyRawKeyB64: rawKey }
+        kind: handshake.kind,
+        version: handshake.version,
+        pubB64: handshake.pubB64
       });
-
       return;
     }
 
-    if (originalText.startsWith("E2EHS2:") || originalText.startsWith("[[E2EHS2:")) {
-      markProcessed(cacheKey);
+    if (!fullText.includes("E2EMSG:")) return;
 
-      const rawKey = extractLegacyHandshakeKey(originalText, "E2EHS2:");
-      if (!rawKey) return;
+    const textElement = findBestTextContainer(messageElement);
+    if (!textElement) return;
+    // Already rendered (or already showing an error — retried explicitly
+    // when keys change, never from DOM mutations, to avoid render loops).
+    if (textElement.dataset.e2eDecrypted) return;
 
-      const activeChatId = state.chatId || extractChatId();
-      if (!activeChatId) return;
+    const envelopeInfo = Crypto.parseMessageEnvelope(textElement.textContent || "");
+    if (!envelopeInfo) return;
 
-      await safeSendToBackground("HANDSHAKE_MARK_HS2_DETECTED", {
-        chatId: activeChatId,
-        payload: { legacyRawKeyB64: rawKey }
-      });
+    queueDecrypt(envelopeInfo.envelope, textElement);
+  }
 
+  // -------------------------------------------------------------------------
+  // Decryption pipeline: envelopes are collected for a few milliseconds and
+  // decrypted in a single round trip to the background script.
+  // -------------------------------------------------------------------------
+
+  function queueDecrypt(envelope, textElement) {
+    const cached = state.plaintextCache.get(envelope);
+    if (cached) {
+      renderDecryptResult(textElement, cached);
       return;
     }
 
-    if (originalText.startsWith("E2EMSG:")) {
-      markProcessed(cacheKey);
+    const elements = state.decryptQueue.get(envelope) || new Set();
+    elements.add(textElement);
+    state.decryptQueue.set(envelope, elements);
 
-      // Decrypt whenever key exists. Toggle only controls sending.
-      if (!state.sharedKey) return;
+    if (!state.decryptTimer) {
+      state.decryptTimer = setTimeout(() => {
+        flushDecryptQueue().catch((err) => console.error("[E2E] decrypt flush failed:", err));
+      }, 80);
+    }
+  }
 
-      try {
-        const textForDecrypt = payload.text;
-        const parts = textForDecrypt.slice(7).split(":");
-        if (parts.length < 2) return;
+  async function flushDecryptQueue() {
+    state.decryptTimer = null;
+    if (state.destroyed || !state.chatId) return;
 
-        const ivB64 = parts[0].trim();
-        const ciphertextB64 = parts.slice(1).join(":").trim();
+    const batch = [...state.decryptQueue.entries()];
+    state.decryptQueue.clear();
+    if (!batch.length) return;
 
-        if (!looksLikeBase64(ivB64) || !looksLikeBase64(ciphertextB64)) {
-          throw new Error("Malformed encrypted payload");
-        }
+    const envelopes = batch.map(([envelope]) => envelope);
+    const res = await safeSendToBackground("DECRYPT_BATCH", { chatId: state.chatId, envelopes });
+    const results = res?.success ? res.results : null;
 
-        const ivBytes = new Uint8Array(base64ToArrayBuffer(ivB64));
-        if (ivBytes.length !== 12) {
-          throw new Error(`Invalid IV length: ${ivBytes.length}`);
-        }
-
-        const decrypted = await decryptMessage(ciphertextB64, ivB64);
-
-        if (payload.textElement) {
-          renderDecryptedMessage(payload.textElement, decrypted);
-        }
-      } catch (err) {
-        console.error("[E2E] Decryption failed:", err);
-        if (payload.textElement) {
-          renderDecryptError(payload.textElement, "Failed to decrypt");
-        }
+    batch.forEach(([envelope, elements], index) => {
+      const result = results?.[index] || { ok: false, code: "error" };
+      cachePlaintext(envelope, result);
+      for (const el of elements) {
+        renderDecryptResult(el, result);
       }
+    });
+  }
 
-      return;
+  function cachePlaintext(envelope, result) {
+    state.plaintextCache.set(envelope, result);
+    if (state.plaintextCache.size > state.maxPlaintextCache) {
+      const first = state.plaintextCache.keys().next().value;
+      state.plaintextCache.delete(first);
     }
+  }
 
-    if (payload.kind === "plain" && payload.textElement) {
-      markProcessed(cacheKey);
-      addMessageSecurityIndicator(payload.textElement, "plain");
+  function renderDecryptResult(textElement, result) {
+    if (!textElement?.isConnected) return;
+
+    if (result.ok) {
+      renderDecryptedMessage(textElement, result.plaintext);
+    } else {
+      renderDecryptError(textElement, decryptErrorLabel(result.code));
+    }
+  }
+
+  function decryptErrorLabel(code) {
+    switch (code) {
+      case "no_key":
+        return "Encrypted — no key on this device";
+      case "bad_envelope":
+        return "Malformed encrypted message";
+      case "auth_failed":
+      default:
+        return "Failed to decrypt";
     }
   }
 
@@ -571,16 +624,24 @@
 
     const originalMessage = getInputText(state.messageInput).trim();
     if (!originalMessage) return;
-    if (!state.sharedKey) return;
+    if (!canEncrypt()) return;
 
     try {
-      const encrypted = await encryptMessage(originalMessage);
-      setInputText(state.messageInput, encrypted);
+      const res = await safeSendToBackground("ENCRYPT_MESSAGE", {
+        chatId: state.chatId,
+        text: originalMessage
+      });
+      if (!res?.success || !res.envelope) {
+        throw new Error(res?.error || "encrypt_failed");
+      }
+
+      setInputText(state.messageInput, res.envelope);
       await sleep(80);
       triggerSendMessage();
       await sleep(80);
       clearInput(state.messageInput);
     } catch (err) {
+      // The original plaintext stays in the input and nothing was sent.
       console.error("[E2E] Encryption failed:", err);
     }
   }
@@ -615,42 +676,9 @@
     }));
   }
 
-  async function encryptMessage(plaintext) {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encoded = new TextEncoder().encode(plaintext);
-
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv },
-      state.sharedKey,
-      encoded
-    );
-
-    return `E2EMSG:${arrayBufferToBase64(iv)}:${arrayBufferToBase64(ciphertext)}`;
-  }
-
-  async function decryptMessage(ciphertextB64, ivB64) {
-    const iv = base64ToArrayBuffer(ivB64);
-    const ciphertext = base64ToArrayBuffer(ciphertextB64);
-
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
-      state.sharedKey,
-      ciphertext
-    );
-
-    return new TextDecoder().decode(decrypted);
-  }
-
-  async function importAESKey(keyB64) {
-    const keyData = base64ToArrayBuffer(keyB64);
-    return crypto.subtle.importKey(
-      "raw",
-      keyData,
-      { name: "AES-GCM" },
-      false,
-      ["encrypt", "decrypt"]
-    );
-  }
+  // -------------------------------------------------------------------------
+  // Rendering
+  // -------------------------------------------------------------------------
 
   function updateEncryptionStatusUI() {
     let indicator = document.getElementById("e2e-status-indicator");
@@ -674,10 +702,14 @@
       document.body.appendChild(indicator);
     }
 
-    if (state.encryptionEnabled && state.sharedKey) {
+    const enabled = !!state.chat?.enabled;
+    if (enabled && state.chat?.v2Ready) {
       indicator.textContent = "🔒 E2E READY";
       indicator.style.background = "#4CAF50";
-    } else if (state.encryptionEnabled && !state.sharedKey) {
+    } else if (enabled && state.chat?.legacyReady) {
+      indicator.textContent = "🔒 E2E LEGACY — rotate keys";
+      indicator.style.background = "#FF9800";
+    } else if (enabled) {
       indicator.textContent = "🟡 E2E ON (NO KEY)";
       indicator.style.background = "#FF9800";
     } else {
@@ -687,42 +719,31 @@
   }
 
   function detectTextDirection(text) {
-  if (!text) return "ltr";
+    if (!text) return "ltr";
 
-  // محدوده حروف فارسی، عربی و عبری
-  const rtlRegex = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/g;
-  // محدوده حروف لاتین
-  const ltrRegex = /[A-Za-z]/g;
+    // Persian, Arabic and Hebrew ranges vs Latin ranges: whichever script
+    // dominates decides direction; ties fall back to the first strong char.
+    const rtlRegex = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/g;
+    const ltrRegex = /[A-Za-z]/g;
 
-  // پیدا کردن تمام موارد مطابقت
-  const rtlMatches = text.match(rtlRegex) || [];
-  const ltrMatches = text.match(ltrRegex) || [];
+    const rtlMatches = text.match(rtlRegex) || [];
+    const ltrMatches = text.match(ltrRegex) || [];
 
-  // اگر تعداد حروف فارسی بیشتر از انگلیسی بود -> rtl
-  if (rtlMatches.length > ltrMatches.length) {
-    return "rtl";
-  } 
-  // اگر تعداد حروف انگلیسی بیشتر بود -> ltr
-  if (ltrMatches.length > rtlMatches.length) {
+    if (rtlMatches.length > ltrMatches.length) return "rtl";
+    if (ltrMatches.length > rtlMatches.length) return "ltr";
+
+    for (const ch of text) {
+      if (/[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/.test(ch)) return "rtl";
+      if (/[A-Za-z]/.test(ch)) return "ltr";
+    }
+
     return "ltr";
   }
-
-  // اگر تعداد مساوی بود یا هیچکدام یافت نشد (مثل اعداد یا علائم)، 
-  // آن وقت به سراغ اولین کاراکتر قدرتمند می‌رویم (همان منطق قبلی شما)
-  for (const ch of text) {
-    if (/[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/.test(ch)) return "rtl";
-    if (/[A-Za-z]/.test(ch)) return "ltr";
-  }
-
-  return "ltr";
-}
-
 
   function renderDecryptedMessage(textElement, decryptedText) {
     if (!textElement) return;
     if (textElement.dataset.e2eDecrypted === "1") return;
     textElement.textContent = "";
-
 
     textElement.dataset.e2eDecrypted = "1";
     const text = document.createElement("span");
@@ -747,7 +768,7 @@
   function renderDecryptError(textElement, message = "Failed to decrypt") {
     if (!textElement) return;
 
-    textElement.dataset.e2eDecrypted = "1";
+    textElement.dataset.e2eDecrypted = "error";
     textElement.textContent = "";
 
     const wrapper = document.createElement("span");
@@ -792,16 +813,6 @@
     lockIndicator.className = "e2e-message-lock-indicator x3ai0M";
     lockIndicator.setAttribute("aria-label", "Decrypted message");
     lockIndicator.title = "Decrypted message";
-    // lockIndicator.style.display = "inline-flex";
-    // lockIndicator.style.alignItems = "center";
-    // lockIndicator.style.justifyContent = "center";
-    // lockIndicator.style.width = "12px";
-    // lockIndicator.style.height = "12px";
-    // lockIndicator.style.flex = "0 0 auto";
-    // lockIndicator.style.color = "currentColor";
-    // lockIndicator.style.opacity = "0.72";
-
-    // lockIndicator.appendChild(createLockSvgIcon());
 
     const timestamp =
       infoContainer.querySelector("time") ||
@@ -818,49 +829,26 @@
     }
   }
 
-  function createLockSvgIcon() {
-    const svgNs = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(svgNs, "svg");
-    svg.setAttribute("width", "11");
-    svg.setAttribute("height", "11");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("aria-hidden", "true");
-    svg.style.display = "block";
-    svg.style.alignSelf = "self-start";
+  // -------------------------------------------------------------------------
+  // Background messaging
+  // -------------------------------------------------------------------------
 
-    const path = document.createElementNS(svgNs, "path");
-    path.setAttribute("stroke", "white");
-    path.setAttribute("stroke-width", "2.75");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    path.setAttribute(
-      "d",
-      "M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"
-    );
-
-    svg.appendChild(path);
-    return svg;
-  }
-
+  // Promise style works in both browsers (Chrome MV3 returns a promise
+  // when no callback is passed; Firefox is promise-only).
   async function safeSendToBackground(type, data = {}) {
     if (state.destroyed) return { error: "content_destroyed" };
 
     try {
-      return await new Promise((resolve) => {
-        api.runtime.sendMessage({ type, ...data }, (response) => {
-          const err = api.runtime.lastError;
-          if (err) {
-            resolve({ error: err.message });
-            return;
-          }
-          resolve(response || {});
-        });
-      });
+      const response = await api.runtime.sendMessage({ type, ...data });
+      return response || {};
     } catch (err) {
       return { error: String(err?.message || err) };
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Chat / DOM discovery
+  // -------------------------------------------------------------------------
 
   function extractChatId() {
     try {
@@ -946,75 +934,6 @@
     }
 
     return items;
-  }
-
-  function extractMessagePayload(messageElement) {
-    const fullText = messageElement.textContent?.trim();
-    if (!fullText) return null;
-
-    const hsEnvelope = extractHandshakeEnvelope(fullText);
-    if (hsEnvelope) {
-      return {
-        text: hsEnvelope,
-        textElement: messageElement
-      };
-    }
-
-    const textElement = findBestTextContainer(messageElement);
-    if (!textElement) return null;
-
-    const text = textElement.textContent?.trim();
-    if (!text) return null;
-
-    const msgEnvelope = extractEncryptedEnvelope(text);
-    if (!msgEnvelope) return null;
-
-    return {
-      text: msgEnvelope,
-      textElement
-    };
-  }
-
-  function extractHandshakeEnvelope(text) {
-    const hs1Marker = text.match(/\[\[E2EHS1:([A-Za-z0-9+/=]{80,140})\]\]/);
-    if (hs1Marker) return `[[E2EHS1:${hs1Marker[1]}]]`;
-
-    const hs2Marker = text.match(/\[\[E2EHS2:([A-Za-z0-9+/=]{80,140})\]\]/);
-    if (hs2Marker) return `[[E2EHS2:${hs2Marker[1]}]]`;
-
-    const hs1 = text.match(/E2EHS1:[A-Za-z0-9+/=]{80,140}/);
-    if (hs1) return hs1[0];
-
-    const hs2 = text.match(/E2EHS2:[A-Za-z0-9+/=]{80,140}/);
-    if (hs2) return hs2[0];
-
-    return null;
-  }
-
-  function extractEncryptedEnvelope(text) {
-    if (!text) return null;
-    const msg = text.match(/E2EMSG:([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)/);
-    return msg ? msg[0] : null;
-  }
-
-  function extractLegacyHandshakeKey(text, prefix) {
-    if (!text) return null;
-
-    if (prefix === "E2EHS1:") {
-      const marker = text.match(/^\[\[E2EHS1:([A-Za-z0-9+/=]{80,140})\]\]$/);
-      if (marker) return marker[1];
-      const raw = text.match(/^E2EHS1:([A-Za-z0-9+/=]{80,140})$/);
-      return raw ? raw[1] : null;
-    }
-
-    if (prefix === "E2EHS2:") {
-      const marker = text.match(/^\[\[E2EHS2:([A-Za-z0-9+/=]{80,140})\]\]$/);
-      if (marker) return marker[1];
-      const raw = text.match(/^E2EHS2:([A-Za-z0-9+/=]{80,140})$/);
-      return raw ? raw[1] : null;
-    }
-
-    return null;
   }
 
   function findBestTextContainer(messageElement) {
@@ -1134,36 +1053,13 @@
 
   function isHandshakeText(text) {
     return (
-      text.startsWith("[[E2EHS1:") ||
-      text.startsWith("[[E2EHS2:") ||
+      text.includes("[[E2EHS") ||
       text.startsWith("E2EHS1:") ||
       text.startsWith("E2EHS2:")
     );
   }
 
-  function looksLikeBase64(s) {
-    return !!s && /^[A-Za-z0-9+/=]+$/.test(s);
-  }
-
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }
-
-  function base64ToArrayBuffer(base64) {
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes.buffer;
   }
 })();

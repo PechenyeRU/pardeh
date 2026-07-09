@@ -13,6 +13,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const logsEl = document.getElementById("logs");
 
   let chatId = null;
+  let tabId = null;
 
   function setStatusColor(element, token) {
     element.style.color = `var(${token})`;
@@ -34,32 +35,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     logsEl.prepend(div);
   }
 
-  function sendToBackground(type, data = {}) {
-    return new Promise((resolve) => {
-      api.runtime.sendMessage({ type, ...data }, (res) => {
-        if (api.runtime.lastError) {
-          resolve({ error: api.runtime.lastError.message });
-        } else {
-          resolve(res || {});
-        }
-      });
-    });
+  async function sendToBackground(type, data = {}) {
+    try {
+      return (await api.runtime.sendMessage({ type, ...data })) || {};
+    } catch (err) {
+      return { error: String(err?.message || err) };
+    }
   }
 
-  async function getActiveChatId() {
+  async function getActiveChatContext() {
     const tabs = await api.tabs.query({ active: true, currentWindow: true });
-    if (!tabs.length) return null;
+    if (!tabs.length) return { chatId: null, tabId: null };
 
     try {
       const res = await api.tabs.sendMessage(tabs[0].id, { type: "GET_CHAT_ID" });
-      return res?.chatId || null;
+      return { chatId: res?.chatId || null, tabId: tabs[0].id };
     } catch {
-      return null;
+      return { chatId: null, tabId: tabs[0].id };
     }
   }
 
   async function refreshUI() {
-    chatId = await getActiveChatId();
+    ({ chatId, tabId } = await getActiveChatContext());
 
     if (!chatId) {
       chatIdEl.textContent = "Not detected";
@@ -69,25 +66,40 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     chatIdEl.textContent = chatId;
 
-    const enc = await sendToBackground("GET_ENCRYPTION_STATUS", { chatId });
-    toggle.checked = !!enc.enabled;
+    const chatState = await sendToBackground("GET_CHAT_STATE", { chatId });
+    if (!chatState.success) {
+      log(`Failed to load state: ${chatState.error}`, "error");
+      return;
+    }
 
-    updateEncryptionLabel(!!enc.enabled);
+    toggle.checked = !!chatState.enabled;
+    updateEncryptionLabel(!!chatState.enabled);
 
-    const key = await sendToBackground("GET_SHARED_KEY", { chatId });
-    const hasKey = !!key.key;
+    if (chatState.v2Ready) {
+      keyStatusEl.textContent = "Ready";
+      setStatusColor(keyStatusEl, "--success");
+    } else if (chatState.legacyReady) {
+      keyStatusEl.textContent = "Legacy key";
+      setStatusColor(keyStatusEl, "--warning");
+    } else {
+      keyStatusEl.textContent = "No key";
+      setStatusColor(keyStatusEl, "--text-muted");
+    }
 
-    keyStatusEl.textContent = hasKey ? "Ready" : "No key";
-    setStatusColor(keyStatusEl, hasKey ? "--success" : "--text-muted");
-
-    const pending = await sendToBackground("GET_PENDING_HANDSHAKE", { chatId });
-
-    if (hasKey) {
+    if (chatState.warnRekey) {
+      handshakeStatusEl.textContent = "New key offer — verify peer!";
+      setStatusColor(handshakeStatusEl, "--danger");
+      handshakeBtn.disabled = false;
+    } else if (chatState.v2Ready && !chatState.pendingStage) {
       handshakeStatusEl.textContent = "Complete";
       setStatusColor(handshakeStatusEl, "--success");
       handshakeBtn.disabled = true;
-    } else if (pending?.pending) {
-      handshakeStatusEl.textContent = "In progress";
+    } else if (chatState.pendingStage === "hs1_sent") {
+      handshakeStatusEl.textContent = "Waiting for peer";
+      setStatusColor(handshakeStatusEl, "--warning");
+      handshakeBtn.disabled = false;
+    } else if (chatState.pendingStage === "awaiting_click") {
+      handshakeStatusEl.textContent = "Offer received";
       setStatusColor(handshakeStatusEl, "--warning");
       handshakeBtn.disabled = false;
     } else {
@@ -97,7 +109,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // 🔘 Toggle encryption
   toggle.addEventListener("change", async () => {
     if (!chatId) return;
 
@@ -115,25 +126,16 @@ document.addEventListener("DOMContentLoaded", async () => {
       toggle.checked = !toggle.checked;
       log("Failed to toggle encryption", "error");
     }
-    const tabs = await api.tabs.query({ active: true, currentWindow: true });
-if (tabs.length) {
-  try {
-    await api.tabs.sendMessage(tabs[0].id, {
-      type: "UPDATE_ENCRYPTION_STATUS",
-      enabled: toggle.checked
-    });
-  } catch (_) {}
-}
+
     refreshUI();
   });
 
-  // 🤝 Handshake button
   handshakeBtn.addEventListener("click", async () => {
     if (!chatId) return;
 
     log("Initiating handshake...");
 
-    const res = await sendToBackground("HANDSHAKE_CLICK", { chatId });
+    const res = await sendToBackground("HANDSHAKE_CLICK", { chatId, tabId });
 
     if (res.success) {
       log(`Action: ${res.action}`);
@@ -144,7 +146,6 @@ if (tabs.length) {
     setTimeout(refreshUI, 500);
   });
 
-  // 🧹 Clear keys
   clearBtn.addEventListener("click", async () => {
     if (!chatId) return;
 
