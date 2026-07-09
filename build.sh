@@ -17,6 +17,7 @@ FILES=(
   background.js
   crypto.js
   state-machine.js
+  i18n.js
   content.js
   popup.html
   popup.js

@@ -18,7 +18,7 @@ const META_PREFIX = "chat_meta_";
 const LEGACY_KEY_PREFIX = "chat_key_";
 const PEER_LEGACY_PREFIX = "peer_legacy_";
 const HANDSHAKE_TTL_MS = 10 * 60 * 1000;
-const CONTENT_SCRIPTS = ["crypto.js", "content.js"];
+const CONTENT_SCRIPTS = ["crypto.js", "i18n.js", "content.js"];
 
 // ---------------------------------------------------------------------------
 // Message router

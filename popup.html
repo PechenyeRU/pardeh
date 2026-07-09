@@ -93,6 +93,29 @@
       margin: 0;
       font-size: 18px;
       color: var(--text);
+      flex: 1;
+    }
+
+    .lang-button {
+      width: auto;
+      padding: 4px 8px;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .lang-button:hover {
+      background: var(--surface-soft);
+      color: var(--text);
+    }
+
+    [dir="rtl"] .logo {
+      margin-right: 0;
+      margin-left: 10px;
     }
 
     .status-card {
@@ -325,59 +348,47 @@
   <div class="container">
     <div class="header">
       <div class="logo">🔒</div>
-      <h1>Pardeh</h1>
+      <h1 data-i18n="appName">Pardeh</h1>
+      <button id="langSwitch" class="lang-button" title="Language">🌐 EN</button>
     </div>
 
-    <div id="rekeyWarning" class="banner banner-danger hidden">
-      The contact sent a new key offer. Accept it only if they told you
-      they rotated keys, then compare the new safety number out-of-band.
-    </div>
+    <div id="rekeyWarning" class="banner banner-danger hidden" data-i18n="rekeyWarning"></div>
 
-    <div id="legacyPeerWarning" class="banner banner-warning hidden">
-      Your contact runs an outdated version of Pardeh. Ask them to update
-      before doing a handshake.
-    </div>
+    <div id="legacyPeerWarning" class="banner banner-warning hidden" data-i18n="legacyPeerWarning"></div>
 
-    <div id="legacyKeyWarning" class="banner banner-warning hidden">
-      This chat uses a legacy key from an old version. Rotate keys to
-      upgrade to the current protocol.
-    </div>
+    <div id="legacyKeyWarning" class="banner banner-warning hidden" data-i18n="legacyKeyWarning"></div>
 
     <div class="status-card">
       <div class="status-item">
-        <span class="status-label">Chat ID:</span>
-        <span id="chatId" class="status-value">Loading...</span>
+        <span class="status-label" data-i18n="chatIdLabel">Chat ID:</span>
+        <span id="chatId" class="status-value" data-i18n="loading">Loading...</span>
       </div>
 
       <div class="status-item">
-        <span class="status-label">Encryption:</span>
-        <span id="encryptionStatus" class="status-value">Checking...</span>
+        <span class="status-label" data-i18n="encryptionLabel">Encryption:</span>
+        <span id="encryptionStatus" class="status-value" data-i18n="checking">Checking...</span>
       </div>
 
       <div class="status-item">
-        <span class="status-label">Handshake:</span>
-        <span id="handshakeStatus" class="status-value">Not started</span>
+        <span class="status-label" data-i18n="handshakeLabel">Handshake:</span>
+        <span id="handshakeStatus" class="status-value" data-i18n="hsNotStarted">Not started</span>
       </div>
 
       <div class="status-item">
-        <span class="status-label">Key Status:</span>
-        <span id="keyStatus" class="status-value">No key</span>
+        <span class="status-label" data-i18n="keyStatusLabel">Key Status:</span>
+        <span id="keyStatus" class="status-value" data-i18n="keyNone">No key</span>
       </div>
     </div>
 
     <div id="safetyCard" class="status-card hidden">
-      <h3 class="section-title">Safety number</h3>
+      <h3 class="section-title" data-i18n="safetyTitle">Safety number</h3>
       <div id="fingerprint" class="fingerprint"></div>
-      <p class="hint">
-        Compare this number with your contact over another channel (call,
-        in person). If it does not match, someone may be intercepting the
-        conversation — do not trust the chat.
-      </p>
-      <button id="copyFingerprint" class="secondary-button" style="margin-top: 10px;">Copy safety number</button>
+      <p class="hint" data-i18n="safetyHint"></p>
+      <button id="copyFingerprint" class="secondary-button" style="margin-top: 10px;" data-i18n="copySafetyNumber">Copy safety number</button>
     </div>
 
     <div class="toggle-container">
-      <span class="toggle-label">Enable Encryption</span>
+      <span class="toggle-label" data-i18n="toggleLabel">Enable Encryption</span>
       <label class="switch">
         <input type="checkbox" id="encryptionToggle">
         <span class="slider"></span>
@@ -385,9 +396,9 @@
     </div>
 
     <div class="actions">
-      <button id="initiateHandshake" disabled>Initiate Handshake</button>
-      <button id="rotateKeys" class="secondary-button hidden">Rotate Keys</button>
-      <button id="clearKeys" class="danger-button">Clear Keys</button>
+      <button id="initiateHandshake" disabled data-i18n="btnHandshake">Initiate Handshake</button>
+      <button id="rotateKeys" class="secondary-button hidden" data-i18n="btnRotate">Rotate Keys</button>
+      <button id="clearKeys" class="danger-button" data-i18n="btnClear">Clear Keys</button>
     </div>
 
     <p id="popupStatus" class="hint hidden" role="status"></p>
@@ -399,6 +410,7 @@
     </div> -->
   </div>
 
+  <script src="i18n.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

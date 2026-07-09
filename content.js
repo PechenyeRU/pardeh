@@ -6,8 +6,10 @@
 
   // Envelope parsing comes from crypto.js (loaded before this file); no key
   // material or crypto operations live in the page context — encryption and
-  // decryption happen in the background script.
+  // decryption happen in the background script. UI strings come from
+  // i18n.js, also loaded before this file.
   const Crypto = globalThis.PardehCrypto;
+  const I18n = globalThis.PardehI18n;
 
   const INSTANCE_KEY = "__e2eExtensionInstance";
   const ENCRYPTION_PREFIX = "encryption_enabled_";
@@ -52,6 +54,9 @@
     decryptTimer: null,
 
     legacyToastShown: false,
+
+    uiLanguage: "en",
+    translate: null,
 
     handlersAttached: false,
     onRuntimeMessage: null,
@@ -118,6 +123,7 @@
     registerRuntimeListener();
     registerStorageListener();
 
+    await loadLanguage();
     state.chatId = await waitForChatId();
     await reloadChatState();
 
@@ -201,9 +207,35 @@
     api.runtime.onMessage.addListener(state.onRuntimeMessage);
   }
 
+  async function loadLanguage() {
+    try {
+      const stored = await api.storage.local.get([I18n.STORAGE_KEY]);
+      setLanguage(stored[I18n.STORAGE_KEY]);
+    } catch (_) {
+      setLanguage(null);
+    }
+  }
+
+  function setLanguage(storedValue) {
+    state.uiLanguage = I18n.resolveLanguage(storedValue);
+    state.translate = I18n.create(state.uiLanguage);
+  }
+
+  function tr(key, params) {
+    if (!state.translate) setLanguage(null);
+    return state.translate(key, params);
+  }
+
   function registerStorageListener() {
     state.onStorageChanged = (changes, areaName) => {
-      if (state.destroyed || areaName !== "local" || !state.chatId) return;
+      if (state.destroyed || areaName !== "local") return;
+
+      if (changes[I18n.STORAGE_KEY]) {
+        setLanguage(changes[I18n.STORAGE_KEY].newValue);
+        updateEncryptionStatusUI();
+      }
+
+      if (!state.chatId) return;
 
       const watched = [
         `${ENCRYPTION_PREFIX}${state.chatId}`,
@@ -624,12 +656,12 @@
   function decryptErrorLabel(code) {
     switch (code) {
       case "no_key":
-        return "Encrypted — no key on this device";
+        return tr("errNoKey");
       case "bad_envelope":
-        return "Malformed encrypted message";
+        return tr("errBadEnvelope");
       case "auth_failed":
       default:
-        return "Failed to decrypt";
+        return tr("errAuthFailed");
     }
   }
 
@@ -657,7 +689,7 @@
     } catch (err) {
       // The original plaintext stays in the input and nothing was sent.
       console.error("[E2E] Encryption failed:", err);
-      showToast("Could not encrypt — the message was NOT sent", "error");
+      showToast(tr("toastEncryptFailed"), "error");
     }
   }
 
@@ -699,7 +731,7 @@
     if (!res) return;
 
     if (res.error === "invalid_public_key") {
-      showToast("Invalid handshake message received — ignored", "error");
+      showToast(tr("toastInvalidHandshake"), "error");
       return;
     }
 
@@ -708,23 +740,18 @@
       // per page load at most.
       if (!state.legacyToastShown) {
         state.legacyToastShown = true;
-        showToast("Your contact runs an outdated Pardeh version — ask them to update", "warn");
+        showToast(tr("toastOutdatedPeer"), "warn");
       }
       return;
     }
 
     if (res.action === "awaiting_click") {
-      showToast(
-        res.warnRekey
-          ? "New encryption key offer received — open Pardeh to verify and accept"
-          : "Encryption key offer received — open Pardeh to accept",
-        "warn"
-      );
+      showToast(tr(res.warnRekey ? "toastOfferRekey" : "toastOfferReceived"), "warn");
       return;
     }
 
     if (res.action === "key_established" || res.action === "sent_hs2_key_established") {
-      showToast("End-to-end encryption established — verify the safety number in Pardeh", "success");
+      showToast(tr("toastEstablished"), "success");
     }
   }
 
@@ -818,18 +845,18 @@
   function dotAppearance() {
     const chat = state.chat;
     if (chat?.warnRekey) {
-      return { color: "#e5484d", label: "New key offer — verify before accepting" };
+      return { color: "#e5484d", label: tr("dotRekey") };
     }
     if (chat?.enabled && chat?.v2Ready) {
-      return { color: "#4caf50", label: "End-to-end encryption active" };
+      return { color: "#4caf50", label: tr("dotActive") };
     }
     if (chat?.enabled && chat?.legacyReady) {
-      return { color: "#ff9800", label: "Encryption active (legacy key) — rotate keys" };
+      return { color: "#ff9800", label: tr("dotLegacy") };
     }
     if (chat?.enabled) {
-      return { color: "#fdd835", label: "Encryption enabled — handshake needed" };
+      return { color: "#fdd835", label: tr("dotEnabledNoKey") };
     }
-    return { color: "#9e9e9e", label: "Encryption off" };
+    return { color: "#9e9e9e", label: tr("dotOff") };
   }
 
   function findHeaderHost() {
@@ -924,6 +951,7 @@
 
     const menu = document.createElement("div");
     menu.id = MENU_ID;
+    menu.dir = I18n.isRtl(state.uiLanguage) ? "rtl" : "ltr";
 
     const rect = dot.getBoundingClientRect();
     const top = Math.min(rect.bottom + 8, window.innerHeight - 240);
@@ -952,17 +980,18 @@
 
     if (state.chat?.fingerprint) {
       const fpTitle = document.createElement("div");
-      fpTitle.textContent = "Safety number";
+      fpTitle.textContent = tr("safetyTitle");
       fpTitle.style.cssText = `font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: ${colors.muted}; margin-bottom: 4px;`;
       menu.appendChild(fpTitle);
 
       const fp = document.createElement("div");
       fp.textContent = state.chat.fingerprint;
+      fp.dir = "ltr";
       fp.style.cssText = "font-family: monospace; font-weight: 700; font-size: 14px; letter-spacing: 0.05em; margin-bottom: 4px; user-select: all;";
       menu.appendChild(fp);
 
       const fpHint = document.createElement("div");
-      fpHint.textContent = "Compare with your contact over another channel.";
+      fpHint.textContent = tr("menuCompareHint");
       fpHint.style.cssText = `font-size: 11px; color: ${colors.muted}; margin-bottom: 10px;`;
       menu.appendChild(fpHint);
     }
@@ -983,7 +1012,7 @@
     `;
 
     const toggleBtn = document.createElement("button");
-    toggleBtn.textContent = state.chat?.enabled ? "Disable encryption" : "Enable encryption";
+    toggleBtn.textContent = tr(state.chat?.enabled ? "menuDisable" : "menuEnable");
     toggleBtn.style.cssText = buttonCss;
     toggleBtn.addEventListener("click", async () => {
       await safeSendToBackground("ENCRYPT_TOGGLE", {
@@ -1017,31 +1046,31 @@
 
   function handshakeMenuLabel() {
     const chat = state.chat;
-    if (chat?.warnRekey) return { text: "Accept new key", disabled: false };
-    if (chat?.pendingStage === "awaiting_click") return { text: "Complete handshake", disabled: false };
-    if (chat?.pendingStage === "hs1_sent") return { text: "Waiting for peer…", disabled: true };
+    if (chat?.warnRekey) return { text: tr("menuAcceptKey"), disabled: false };
+    if (chat?.pendingStage === "awaiting_click") return { text: tr("menuCompleteHandshake"), disabled: false };
+    if (chat?.pendingStage === "hs1_sent") return { text: tr("menuWaitingPeer"), disabled: true };
     if (chat?.v2Ready) return null;
-    return { text: "Start handshake", disabled: false };
+    return { text: tr("menuStartHandshake"), disabled: false };
   }
 
   function reportClickFeedback(res) {
     if (!res) return;
 
     if (res.error && !res.success) {
-      showToast(`Handshake failed: ${res.error}`, "error");
+      showToast(tr("toastHandshakeFailed", { error: res.error }), "error");
       return;
     }
 
     const messages = {
-      sent_hs1: ["Handshake offer sent — your contact must accept it", "info"],
-      sent_hs2_key_established: ["Encryption established — verify the safety number", "success"],
-      key_established: ["Encryption established — verify the safety number", "success"],
-      waiting_for_peer: ["Waiting for your contact to answer the handshake", "info"],
-      already_ready: ["Encryption is already established", "info"]
+      sent_hs1: ["statusSentHs1", "info"],
+      sent_hs2_key_established: ["statusEstablished", "success"],
+      key_established: ["statusEstablished", "success"],
+      waiting_for_peer: ["statusWaiting", "info"],
+      already_ready: ["statusAlreadyReady", "info"]
     };
 
     const entry = messages[res.action];
-    if (entry) showToast(entry[0], entry[1]);
+    if (entry) showToast(tr(entry[0]), entry[1]);
   }
 
   function detectTextDirection(text) {
@@ -1091,7 +1120,7 @@
     addDecryptedMessageIndicator(textElement);
   }
 
-  function renderDecryptError(textElement, message = "Failed to decrypt") {
+  function renderDecryptError(textElement, message = tr("errAuthFailed")) {
     if (!textElement) return;
 
     textElement.dataset.e2eDecrypted = "error";
@@ -1137,8 +1166,8 @@
     const lockIndicator = document.createElement("span");
     lockIndicator.textContent = "🔒";
     lockIndicator.className = "e2e-message-lock-indicator x3ai0M";
-    lockIndicator.setAttribute("aria-label", "Decrypted message");
-    lockIndicator.title = "Decrypted message";
+    lockIndicator.setAttribute("aria-label", tr("decryptedTooltip"));
+    lockIndicator.title = tr("decryptedTooltip");
 
     const timestamp =
       infoContainer.querySelector("time") ||

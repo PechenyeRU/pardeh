@@ -19,11 +19,32 @@ document.addEventListener("DOMContentLoaded", async () => {
   const handshakeBtn = document.getElementById("initiateHandshake");
   const rotateBtn = document.getElementById("rotateKeys");
   const clearBtn = document.getElementById("clearKeys");
+  const langSwitchBtn = document.getElementById("langSwitch");
   const statusEl = document.getElementById("popupStatus");
   const logsEl = document.getElementById("logs");
 
   let chatId = null;
   let tabId = null;
+
+  let lang = "en";
+  let t = PardehI18n.create(lang);
+
+  async function loadLanguage() {
+    const stored = await api.storage.local.get([PardehI18n.STORAGE_KEY]);
+    lang = PardehI18n.resolveLanguage(stored[PardehI18n.STORAGE_KEY]);
+    t = PardehI18n.create(lang);
+    applyStaticTranslations();
+  }
+
+  function applyStaticTranslations() {
+    document.documentElement.lang = lang;
+    document.documentElement.dir = PardehI18n.isRtl(lang) ? "rtl" : "ltr";
+    langSwitchBtn.textContent = `🌐 ${lang.toUpperCase()}`;
+
+    for (const el of document.querySelectorAll("[data-i18n]")) {
+      el.textContent = t(el.dataset.i18n);
+    }
+  }
 
   function setStatusColor(element, token) {
     element.style.color = `var(${token})`;
@@ -34,7 +55,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function updateEncryptionLabel(enabled) {
-    encryptionStatusEl.textContent = enabled ? "Enabled" : "Disabled";
+    encryptionStatusEl.textContent = enabled ? t("enabled") : t("disabled");
     setStatusColor(encryptionStatusEl, enabled ? "--success" : "--text-muted");
   }
 
@@ -55,18 +76,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     statusTimer = setTimeout(() => statusEl.classList.add("hidden"), 6000);
   }
 
-  const ACTION_MESSAGES = {
-    sent_hs1: ["Handshake offer sent — your contact must accept it", "info"],
-    sent_hs1_rotation: ["Rotation started — your contact must accept the new key", "warn"],
-    sent_hs2_key_established: ["Encryption established — compare the safety number", "success"],
-    key_established: ["Encryption established — compare the safety number", "success"],
-    waiting_for_peer: ["Waiting for your contact to answer the handshake", "info"],
-    already_ready: ["Encryption is already established", "info"]
+  const ACTION_STATUS = {
+    sent_hs1: ["statusSentHs1", "info"],
+    sent_hs1_rotation: ["statusRotation", "warn"],
+    sent_hs2_key_established: ["statusEstablished", "success"],
+    key_established: ["statusEstablished", "success"],
+    waiting_for_peer: ["statusWaiting", "info"],
+    already_ready: ["statusAlreadyReady", "info"]
   };
 
   function showActionStatus(action) {
-    const entry = ACTION_MESSAGES[action];
-    if (entry) showStatus(entry[0], entry[1]);
+    const entry = ACTION_STATUS[action];
+    if (entry) showStatus(t(entry[0]), entry[1]);
   }
 
   function log(msg, type = "info") {
@@ -111,7 +132,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     ({ chatId, tabId, isBale } = await getActiveChatContext());
 
     if (!chatId) {
-      chatIdEl.textContent = isBale ? "Open a chat" : "Open web.bale.ai";
+      chatIdEl.textContent = isBale ? t("openChat") : t("openBale");
       handshakeBtn.disabled = true;
       setVisible(safetyCard, false);
       setVisible(rotateBtn, false);
@@ -125,7 +146,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const chatState = await sendToBackground("GET_CHAT_STATE", { chatId });
     if (!chatState.success) {
-      showStatus(`Failed to load state: ${chatState.error}`, "error");
+      showStatus(t("errLoadFailed", { error: chatState.error }), "error");
       return;
     }
 
@@ -133,41 +154,41 @@ document.addEventListener("DOMContentLoaded", async () => {
     updateEncryptionLabel(!!chatState.enabled);
 
     if (chatState.v2Ready) {
-      keyStatusEl.textContent = `Ready (epoch ${chatState.epoch})`;
+      keyStatusEl.textContent = t("keyReady", { epoch: chatState.epoch });
       setStatusColor(keyStatusEl, "--success");
     } else if (chatState.legacyReady) {
-      keyStatusEl.textContent = "Legacy key";
+      keyStatusEl.textContent = t("keyLegacy");
       setStatusColor(keyStatusEl, "--warning");
     } else {
-      keyStatusEl.textContent = "No key";
+      keyStatusEl.textContent = t("keyNone");
       setStatusColor(keyStatusEl, "--text-muted");
     }
 
     if (chatState.warnRekey) {
-      handshakeStatusEl.textContent = "New key offer!";
+      handshakeStatusEl.textContent = t("hsNewKeyOffer");
       setStatusColor(handshakeStatusEl, "--danger");
       handshakeBtn.disabled = false;
-      handshakeBtn.textContent = "Accept New Key";
+      handshakeBtn.textContent = t("btnAcceptKey");
     } else if (chatState.v2Ready && !chatState.pendingStage) {
-      handshakeStatusEl.textContent = "Complete";
+      handshakeStatusEl.textContent = t("hsComplete");
       setStatusColor(handshakeStatusEl, "--success");
       handshakeBtn.disabled = true;
-      handshakeBtn.textContent = "Initiate Handshake";
+      handshakeBtn.textContent = t("btnHandshake");
     } else if (chatState.pendingStage === "hs1_sent") {
-      handshakeStatusEl.textContent = "Waiting for peer";
+      handshakeStatusEl.textContent = t("hsWaiting");
       setStatusColor(handshakeStatusEl, "--warning");
       handshakeBtn.disabled = false;
-      handshakeBtn.textContent = "Initiate Handshake";
+      handshakeBtn.textContent = t("btnHandshake");
     } else if (chatState.pendingStage === "awaiting_click") {
-      handshakeStatusEl.textContent = "Offer received";
+      handshakeStatusEl.textContent = t("hsOffer");
       setStatusColor(handshakeStatusEl, "--warning");
       handshakeBtn.disabled = false;
-      handshakeBtn.textContent = "Complete Handshake";
+      handshakeBtn.textContent = t("btnCompleteHandshake");
     } else {
-      handshakeStatusEl.textContent = "Not started";
+      handshakeStatusEl.textContent = t("hsNotStarted");
       setStatusColor(handshakeStatusEl, "--text-muted");
       handshakeBtn.disabled = false;
-      handshakeBtn.textContent = "Initiate Handshake";
+      handshakeBtn.textContent = t("btnHandshake");
     }
 
     setVisible(safetyCard, !!chatState.fingerprint);
@@ -183,30 +204,39 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Native confirm() dialogs are unreliable inside extension popups, so
   // destructive buttons ask for a second click within a short window.
-  function armTwoStep(button, armedLabel, onConfirm) {
+  function armTwoStep(button, onConfirm) {
     let armed = false;
     let disarmTimer = null;
-    const originalLabel = button.textContent;
+    let restoreLabel = null;
 
     button.addEventListener("click", async () => {
       if (!chatId) return;
 
       if (!armed) {
         armed = true;
-        button.textContent = armedLabel;
+        restoreLabel = button.textContent;
+        button.textContent = t("btnConfirm");
         disarmTimer = setTimeout(() => {
           armed = false;
-          button.textContent = originalLabel;
+          button.textContent = restoreLabel;
         }, 4000);
         return;
       }
 
       clearTimeout(disarmTimer);
       armed = false;
-      button.textContent = originalLabel;
+      button.textContent = restoreLabel;
       await onConfirm();
     });
   }
+
+  langSwitchBtn.addEventListener("click", async () => {
+    lang = PardehI18n.next(lang);
+    t = PardehI18n.create(lang);
+    await api.storage.local.set({ [PardehI18n.STORAGE_KEY]: lang });
+    applyStaticTranslations();
+    refreshUI();
+  });
 
   toggle.addEventListener("change", async () => {
     if (!chatId) return;
@@ -219,11 +249,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
 
     if (res.success) {
-      log(`Encryption ${toggle.checked ? "enabled" : "disabled"}`);
+      log(t(toggle.checked ? "statusEnabled" : "statusDisabled"));
     } else {
       updateEncryptionLabel(!toggle.checked);
       toggle.checked = !toggle.checked;
-      showStatus(`Failed to toggle encryption: ${res.error}`, "error");
+      showStatus(t("errToggleFailed", { error: res.error }), "error");
     }
 
     refreshUI();
@@ -237,31 +267,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (res.success) {
       showActionStatus(res.action);
     } else {
-      showStatus(`Handshake failed: ${res.error}`, "error");
+      showStatus(t("errHandshakeFailed", { error: res.error }), "error");
     }
 
     setTimeout(refreshUI, 500);
   });
 
-  armTwoStep(rotateBtn, "Really rotate?", async () => {
+  armTwoStep(rotateBtn, async () => {
     const res = await sendToBackground("ROTATE_KEYS", { chatId, tabId });
 
     if (res.success) {
       showActionStatus(res.action);
     } else {
-      showStatus(`Rotation failed: ${res.error}`, "error");
+      showStatus(t("errRotationFailed", { error: res.error }), "error");
     }
 
     setTimeout(refreshUI, 500);
   });
 
-  armTwoStep(clearBtn, "Really clear?", async () => {
+  armTwoStep(clearBtn, async () => {
     const res = await sendToBackground("CLEAR_CHAT_STATE", { chatId });
 
     if (res.success) {
-      showStatus("Keys and state cleared", "warn");
+      showStatus(t("statusCleared"), "warn");
     } else {
-      showStatus(`Failed to clear state: ${res.error}`, "error");
+      showStatus(t("errClearFailed", { error: res.error }), "error");
     }
 
     setTimeout(refreshUI, 300);
@@ -273,14 +303,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     try {
       await navigator.clipboard.writeText(value);
-      copyFingerprintBtn.textContent = "Copied!";
+      copyFingerprintBtn.textContent = t("copied");
       setTimeout(() => {
-        copyFingerprintBtn.textContent = "Copy safety number";
+        copyFingerprintBtn.textContent = t("copySafetyNumber");
       }, 1500);
     } catch (err) {
-      showStatus(`Copy failed: ${err.message}`, "error");
+      showStatus(t("errCopyFailed", { error: err.message }), "error");
     }
   });
 
+  await loadLanguage();
   await refreshUI();
 });

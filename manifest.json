@@ -21,7 +21,7 @@
   "content_scripts": [
     {
       "matches": ["https://web.bale.ai/*"],
-      "js": ["crypto.js", "content.js"],
+      "js": ["crypto.js", "i18n.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
