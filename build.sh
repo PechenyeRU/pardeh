@@ -19,6 +19,8 @@ FILES=(
   state-machine.js
   i18n.js
   content.js
+  composer.html
+  composer.js
   popup.html
   popup.js
   icon.png
@@ -55,6 +57,13 @@ m["background"] = {
 }
 
 m["browser_action"] = m.pop("action")
+
+# MV2 takes a flat list of paths instead of match-scoped objects.
+m["web_accessible_resources"] = [
+    path
+    for entry in m["web_accessible_resources"]
+    for path in entry["resources"]
+]
 
 m["browser_specific_settings"] = {
     "gecko": {

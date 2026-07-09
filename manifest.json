@@ -25,6 +25,12 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["composer.html", "composer.js", "i18n.js"],
+      "matches": ["https://web.bale.ai/*"]
+    }
+  ],
   "icons": {
     "16": "icon.png",
     "48": "icon.png",

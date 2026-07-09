@@ -20,6 +20,40 @@ const PEER_LEGACY_PREFIX = "peer_legacy_";
 const HANDSHAKE_TTL_MS = 10 * 60 * 1000;
 const CONTENT_SCRIPTS = ["crypto.js", "i18n.js", "content.js"];
 
+// The composer runs in a child frame of the same tab, so every message
+// aimed at the content script must name the top frame explicitly.
+const TOP_FRAME_ID = 0;
+
+const EMBLEM_KEY = "ui_emblem";
+const EMBLEM_ALPHABET = [
+  "🦊", "🐢", "🦉", "🐙", "🦁", "🐝", "🦋", "🐬", "🦜", "🦌",
+  "🌵", "🍄", "🌻", "🍀", "🌙", "⭐", "🔥", "❄️", "⚡", "🌈",
+  "🎈", "🎸", "🚀", "⛵", "🗝️", "🧭", "🎲", "🍉", "🍋", "🥝"
+];
+
+// Three emoji picked once per installation and shown inside the composer
+// iframe. Page scripts cannot read that frame, so a look-alike composer
+// drawn by the page cannot reproduce the emblem.
+async function getEmblem() {
+  const stored = await api.storage.local.get([EMBLEM_KEY]);
+  if (stored[EMBLEM_KEY]) return stored[EMBLEM_KEY];
+
+  const picks = [];
+  const pool = [...EMBLEM_ALPHABET];
+  const random = crypto.getRandomValues(new Uint32Array(3));
+  for (let i = 0; i < 3; i++) {
+    picks.push(pool.splice(random[i] % pool.length, 1)[0]);
+  }
+
+  const emblem = picks.join(" ");
+  await api.storage.local.set({ [EMBLEM_KEY]: emblem });
+  return emblem;
+}
+
+api.runtime.onInstalled?.addListener(() => {
+  getEmblem().catch((err) => console.error("[E2E] emblem init failed:", err));
+});
+
 // ---------------------------------------------------------------------------
 // Message router
 // ---------------------------------------------------------------------------
@@ -55,6 +89,12 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "SEND_ENCRYPTED":
         return handleSendEncrypted(message.chatId, message.text, tabId);
+
+      case "COMPOSER_INIT":
+        return handleComposerInit(tabId);
+
+      case "GET_EMBLEM":
+        return { success: true, emblem: await getEmblem() };
 
       case "DECRYPT_BATCH":
         return handleDecryptBatch(message.chatId, message.envelopes);
@@ -220,9 +260,24 @@ async function handleEncryptMessage(chatId, text) {
   return { success: false, error: "no_key" };
 }
 
-// Secure compose path: the plaintext comes from the popup (extension UI
-// the page cannot observe), gets encrypted here and only the envelope is
-// ever injected into the page.
+// The composer iframe resolves its chat id here rather than from a
+// postMessage: a hostile page can impersonate the content script towards
+// its own child frames, but it cannot answer for the background script.
+async function handleComposerInit(tabId) {
+  if (!tabId) return { success: false, error: "No tab" };
+
+  let chatId = null;
+  try {
+    const res = await api.tabs.sendMessage(tabId, { type: "GET_CHAT_ID" }, { frameId: TOP_FRAME_ID });
+    chatId = res?.chatId || null;
+  } catch (_) {}
+
+  return { success: true, chatId };
+}
+
+// Secure compose path: the plaintext comes from extension UI the page
+// cannot observe (composer iframe or popup), gets encrypted here and
+// only the envelope is ever injected into the page.
 async function handleSendEncrypted(chatId, text, tabId) {
   if (!chatId || !text) return { success: false, error: "Missing chatId or text" };
 
@@ -557,7 +612,7 @@ async function sendMessageToTab(tabId, message, retries = 2) {
   let lastErr = null;
   for (let i = 0; i <= retries; i++) {
     try {
-      return await api.tabs.sendMessage(tabId, message);
+      return await api.tabs.sendMessage(tabId, message, { frameId: TOP_FRAME_ID });
     } catch (err) {
       lastErr = err;
       await sleep(300);
@@ -569,7 +624,7 @@ async function sendMessageToTab(tabId, message, retries = 2) {
 
 async function ensureContentScript(tabId) {
   try {
-    await api.tabs.sendMessage(tabId, { type: "PING" });
+    await api.tabs.sendMessage(tabId, { type: "PING" }, { frameId: TOP_FRAME_ID });
     return;
   } catch (_) {}
 

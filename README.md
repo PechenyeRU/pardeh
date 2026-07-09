@@ -17,6 +17,7 @@ A browser extension (Chrome MV3 / Firefox) that overlays **end-to-end encryption
 | Crypto module     | `crypto.js`       | Primitives, key derivation, wire formats (shared, unit-tested) |
 | State machine     | `state-machine.js`| Pure handshake decision logic (shared, unit-tested) |
 | Content script    | `content.js`      | DOM integration: message interception, decryption rendering, status dot |
+| Secure composer   | `composer.html/js`| Extension-origin iframe overlaid on Bale's message box |
 | i18n              | `i18n.js`         | English / Persian strings |
 | Popup             | `popup.html/js`   | Status, safety number, toggle, handshake/rotate/clear actions |
 
@@ -48,7 +49,8 @@ If **both** parties initiate simultaneously, a deterministic tie-break on the pu
 - Keys are non-extractable `CryptoKey` objects in extension IndexedDB. Page scripts cannot reach extension storage, and content scripts share no JS objects with the page (isolated world), so there is no path from the page to key material.
 - Decrypted incoming messages are rendered inside **closed shadow roots**: visible to the user, not readable by page scripts through DOM APIs (`textContent`, `innerText`, selection).
 - The send path **fails closed**: the plaintext is pulled out of the page input synchronously inside the event handler (so the page cannot ship it during the async encryption window), the envelope returned by the background script must parse as exactly one well-formed message, and the input is re-verified against it immediately before the send is dispatched. On any anomaly nothing is sent and the plaintext is handed back to the user.
-- **Typing into the page composer is still visible to the page** — window-level key listeners fire before any extension code, on any element, shadow DOM or not. When you do not trust the page with your keystrokes, use **Secure compose** in the popup: the text is typed in extension UI the page cannot observe, encrypted in the background script, and only the envelope is injected into the chat.
+- Outgoing text is typed into the **secure composer**: an extension-origin `<iframe>` overlaid on Bale's message box. Keystrokes inside a cross-origin browsing context do not reach the page's window listeners, so what you type is never observable by the page — unlike anything typed into the native input, which the page sees before any extension code runs. The composer talks straight to the background script; the page only ever receives the ciphertext.
+- The composer displays a personal **emblem** (three emoji chosen once per installation). Page scripts cannot read inside the composer frame, so a look-alike message box drawn by the page cannot reproduce it. The emblem is shown in the popup for reference: if the box in the chat does not show exactly those emoji, it is not Pardeh — do not type in it.
 
 **What it does NOT protect against:**
 
@@ -75,8 +77,9 @@ Both packages are produced by `./build.sh` from a single source tree (the Firefo
 1. Open a chat on web.bale.ai. A **status dot** appears next to the chat header: grey (off), yellow (enabled, no key), green (established), orange (legacy key), red (new key offer to verify).
 2. Click the dot (or open the popup) → **Start handshake**. Your contact accepts with one click.
 3. **Compare the safety number** shown in the popup/dot menu over another channel.
-4. Toggle **Enable Encryption** — outgoing messages are now encrypted; incoming (and your own) encrypted messages are decrypted in place with a 🔒 marker.
-5. The popup's 🌐 button switches the UI between English and Persian (RTL supported).
+4. Toggle **Enable Encryption**. The secure composer takes over the message box — check it shows your emblem, then type and press Enter as usual. Incoming (and your own) encrypted messages are decrypted in place with a 🔒 marker.
+5. The dot menu can switch back to the website's own message box (faster, but the page sees your keystrokes). The popup also offers a **Secure compose** box as a fallback if the overlay cannot attach.
+6. The popup's 🌐 button switches the UI between English and Persian (RTL supported).
 
 ## Development
 

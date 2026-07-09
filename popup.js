@@ -11,6 +11,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const fingerprintEl = document.getElementById("fingerprint");
   const copyFingerprintBtn = document.getElementById("copyFingerprint");
 
+  const emblemEl = document.getElementById("emblem");
   const composeCard = document.getElementById("composeCard");
   const composeInput = document.getElementById("composeInput");
   const composeSendBtn = document.getElementById("composeSend");
@@ -339,6 +340,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  async function loadEmblem() {
+    const res = await sendToBackground("GET_EMBLEM");
+    if (res.emblem) emblemEl.textContent = res.emblem;
+  }
+
   await loadLanguage();
+  await loadEmblem();
   await refreshUI();
 });

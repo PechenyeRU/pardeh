@@ -12,6 +12,8 @@
   const I18n = globalThis.PardehI18n;
 
   const INSTANCE_KEY = "__e2eExtensionInstance";
+  const COMPOSER_PREF_KEY = "secure_composer";
+  const COMPOSER_ID = "e2e-secure-composer";
   const ENCRYPTION_PREFIX = "encryption_enabled_";
   const META_PREFIX = "chat_meta_";
   const LEGACY_KEY_PREFIX = "chat_key_";
@@ -57,6 +59,9 @@
 
     uiLanguage: "en",
     translate: null,
+
+    secureComposer: true,
+    composerTracker: null,
 
     handlersAttached: false,
     onRuntimeMessage: null,
@@ -171,6 +176,7 @@
       }
 
       closeStatusMenu();
+      removeComposer();
       document.getElementById(DOT_ID)?.remove();
       document.getElementById("e2e-toast-container")?.remove();
     } catch (_) {}
@@ -209,8 +215,9 @@
 
   async function loadLanguage() {
     try {
-      const stored = await api.storage.local.get([I18n.STORAGE_KEY]);
+      const stored = await api.storage.local.get([I18n.STORAGE_KEY, COMPOSER_PREF_KEY]);
       setLanguage(stored[I18n.STORAGE_KEY]);
+      state.secureComposer = stored[COMPOSER_PREF_KEY] !== false;
     } catch (_) {
       setLanguage(null);
     }
@@ -233,6 +240,11 @@
       if (changes[I18n.STORAGE_KEY]) {
         setLanguage(changes[I18n.STORAGE_KEY].newValue);
         updateEncryptionStatusUI();
+      }
+
+      if (changes[COMPOSER_PREF_KEY]) {
+        state.secureComposer = changes[COMPOSER_PREF_KEY].newValue !== false;
+        updateComposer();
       }
 
       if (!state.chatId) return;
@@ -269,6 +281,7 @@
     }
 
     updateEncryptionStatusUI();
+    updateComposer();
   }
 
   function canDecrypt() {
@@ -370,6 +383,7 @@
     await scanExistingMessages();
 
     updateEncryptionStatusUI();
+    updateComposer();
   }
 
   function startDomWatcher() {
@@ -399,6 +413,8 @@
       if (!dot || !dot.isConnected) {
         updateEncryptionStatusUI();
       }
+
+      updateComposer();
     });
 
     state.domObserver.observe(document.documentElement || document.body, {
@@ -741,6 +757,114 @@
   }
 
   // -------------------------------------------------------------------------
+  // Secure composer overlay.
+  //
+  // An extension-origin iframe is laid over Bale's message input whenever
+  // the chat can be encrypted. Keystrokes typed inside a cross-origin
+  // browsing context do not reach the host page's window listeners, so
+  // the plaintext never exists in the page — unlike anything typed in the
+  // native input, which the page observes before any extension code runs.
+  // The composer talks straight to the background script; the page is
+  // only ever handed the ciphertext.
+  // -------------------------------------------------------------------------
+
+  function shouldShowComposer() {
+    return canEncrypt() && state.secureComposer && !!findMessageInput();
+  }
+
+  function updateComposer() {
+    if (state.destroyed || !shouldShowComposer()) {
+      removeComposer();
+      return;
+    }
+
+    ensureComposer();
+    syncComposerPosition();
+  }
+
+  function ensureComposer() {
+    let frame = document.getElementById(COMPOSER_ID);
+    if (frame?.isConnected) return frame;
+
+    frame = document.createElement("iframe");
+    frame.id = COMPOSER_ID;
+    frame.src = api.runtime.getURL("composer.html");
+    frame.setAttribute("scrolling", "no");
+    frame.style.cssText = `
+      position: fixed;
+      z-index: 2147483646;
+      border: none;
+      background: transparent;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+      border-radius: 12px;
+    `;
+    document.body.appendChild(frame);
+
+    startComposerTracking();
+    return frame;
+  }
+
+  function removeComposer() {
+    stopComposerTracking();
+    document.getElementById(COMPOSER_ID)?.remove();
+  }
+
+  function syncComposerPosition() {
+    const frame = document.getElementById(COMPOSER_ID);
+    const input = findMessageInput();
+    if (!frame) return;
+
+    if (!input?.isConnected) {
+      frame.style.visibility = "hidden";
+      return;
+    }
+
+    // Cover the whole composer row, not just the editable node, so the
+    // page's own input cannot be clicked or focused past the overlay.
+    const anchor = input.closest("form") || input.parentElement || input;
+    const rect = anchor.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 16) {
+      frame.style.visibility = "hidden";
+      return;
+    }
+
+    frame.style.visibility = "visible";
+    frame.style.left = `${rect.left}px`;
+    frame.style.top = `${rect.top}px`;
+    frame.style.width = `${rect.width}px`;
+    frame.style.height = `${Math.max(rect.height, 48)}px`;
+  }
+
+  function startComposerTracking() {
+    if (state.composerTracker) return;
+
+    const onChange = () => syncComposerPosition();
+
+    window.addEventListener("resize", onChange);
+    window.addEventListener("scroll", onChange, true);
+
+    // Bale reflows its composer on typing, attachments and replies; a
+    // cheap rect poll keeps the overlay glued without a rAF loop.
+    const interval = setInterval(onChange, 250);
+
+    state.composerTracker = () => {
+      window.removeEventListener("resize", onChange);
+      window.removeEventListener("scroll", onChange, true);
+      clearInterval(interval);
+    };
+  }
+
+  function stopComposerTracking() {
+    if (!state.composerTracker) return;
+    state.composerTracker();
+    state.composerTracker = null;
+  }
+
+  async function toggleSecureComposer() {
+    await api.storage.local.set({ [COMPOSER_PREF_KEY]: !state.secureComposer });
+  }
+
+  // -------------------------------------------------------------------------
   // User feedback
   // -------------------------------------------------------------------------
 
@@ -1039,6 +1163,17 @@
       closeStatusMenu();
     });
     menu.appendChild(toggleBtn);
+
+    if (canEncrypt()) {
+      const composerBtn = document.createElement("button");
+      composerBtn.textContent = tr(state.secureComposer ? "menuComposerOff" : "menuComposerOn");
+      composerBtn.style.cssText = buttonCss;
+      composerBtn.addEventListener("click", async () => {
+        closeStatusMenu();
+        await toggleSecureComposer();
+      });
+      menu.appendChild(composerBtn);
+    }
 
     const handshakeLabel = handshakeMenuLabel();
     if (handshakeLabel) {
