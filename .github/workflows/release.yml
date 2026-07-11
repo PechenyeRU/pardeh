@@ -92,21 +92,26 @@ jobs:
           VERSION="$(node -p "require('./manifest.json').version")"
           rm -rf ffbuild && mkdir ffbuild
           (cd ffbuild && unzip -q "../dist/pardeh-${VERSION}-firefox.xpi")
-          # web-ext sign uploads the version to AMO and returns a signed xpi.
-          # A version already on AMO makes it fail; don't kill the release, just
-          # attach the unsigned xpi in that case.
+          # web-ext sign uploads the version to AMO and waits for approval.
+          # The wait is bounded: a version flagged for human review (binary
+          # files trigger that) can take days, and the release must not hang
+          # on it. The upload survives on AMO either way, so the signed xpi
+          # can be attached later by the amo-signed workflow.
           if npx --yes web-ext sign \
                --source-dir=ffbuild \
                --channel=unlisted \
+               --approval-timeout=420000 \
                --api-key="$WEB_EXT_API_KEY" \
-               --api-secret="$WEB_EXT_API_SECRET"; then
+               --api-secret="$WEB_EXT_API_SECRET" 2>&1 | tee sign.log; then
             signed="$(ls web-ext-artifacts/*.xpi 2>/dev/null | head -1)"
             if [ -n "$signed" ]; then
               cp "$signed" "dist/pardeh-${VERSION}-firefox-signed.xpi"
               echo "Signed: dist/pardeh-${VERSION}-firefox-signed.xpi"
             fi
+          elif grep -qiE "approval|timeout" sign.log; then
+            echo "::warning::AMO did not approve ${VERSION} within the timeout (likely flagged for human review). Releasing without the signed xpi; once AMO approves, the amo-signed workflow attaches it (daily schedule or manual run)."
           else
-            echo "::warning::web-ext sign failed (version may already exist on AMO); attaching unsigned xpi only."
+            echo "::warning::web-ext sign failed (version may already exist on AMO); attaching unsigned xpi only. See sign.log above."
           fi
 
       - name: Upload build artifacts

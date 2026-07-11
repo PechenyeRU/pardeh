@@ -1,0 +1,92 @@
+name: amo-signed
+
+# Attaches the AMO-signed firefox xpi to an existing GitHub release.
+#
+# The release workflow gives AMO a bounded time to approve; when the queue
+# is slower (human review of a flagged version), the release ships without
+# the signed xpi. Run this manually — or let the daily schedule catch it —
+# once AMO finishes: it downloads the signed file and uploads it to the
+# matching release. Idempotent; the manual run overwrites an existing asset.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "extension version (e.g. 2.2.0); defaults to the latest release"
+        required: false
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve target version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${{ github.event.inputs.version }}"
+          if [ -z "$v" ]; then
+            v="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName' | sed 's/^v//')"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "target: $v"
+
+      - name: Check whether the release still needs the signed asset
+        id: need
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          has="$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | any(endswith("firefox-signed.xpi"))')"
+          if [ "$has" = "true" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "release v$v already has the signed xpi — nothing to do"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch signed xpi from AMO
+        id: fetch
+        if: steps.need.outputs.needed == 'true'
+        env:
+          AMO_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          AMO_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          set -uo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          if node scripts/amo-fetch-signed.mjs "$v" "pardeh-$v-firefox-signed.xpi"; then
+            unzip -l "pardeh-$v-firefox-signed.xpi" | grep -q "META-INF/mozilla.rsa"
+            echo "signature block present"
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            rc=$?
+            if [ "$rc" -eq 4 ]; then
+              echo "::warning::v$v not approved on AMO yet — will retry on the next scheduled run"
+              echo "have=false" >> "$GITHUB_OUTPUT"
+            else
+              exit "$rc"
+            fi
+          fi
+
+      - name: Attach to the release
+        if: steps.fetch.outputs.have == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          gh release upload "v$v" "pardeh-$v-firefox-signed.xpi" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "attached pardeh-$v-firefox-signed.xpi to release v$v"
