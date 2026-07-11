@@ -95,6 +95,9 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "COMPOSER_INIT":
         return handleComposerInit(tabId);
 
+      case "COMPOSER_PANEL":
+        return handleComposerPanel(tabId, message.open);
+
       case "GET_EMBLEM":
         return { success: true, emblem: await getEmblem() };
 
@@ -295,6 +298,16 @@ async function handleComposerInit(tabId) {
   } catch (_) {}
 
   return { success: true, chatId };
+}
+
+// The composer cannot resize its own iframe (the parent document owns the
+// element) and page-level postMessage is untrusted in both directions, so
+// a panel open/close travels composer -> background -> content script:
+// page scripts cannot forge runtime messages.
+async function handleComposerPanel(tabId, open) {
+  if (!tabId) return { success: false, error: "No tab" };
+  await sendMessageToTab(tabId, { type: "SET_COMPOSER_PANEL", open: !!open });
+  return { success: true };
 }
 
 // Secure compose path: the plaintext comes from extension UI the page

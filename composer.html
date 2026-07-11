@@ -13,37 +13,133 @@
       --border: #23a26d;
       --primary: #1d8cf0;
       --primary-hover: #1676cb;
+      --hover: rgba(0, 0, 0, 0.06);
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #101827;
-        --text: #e5edf5;
-        --muted: #95a3b8;
-        --border: #35c88a;
-        --primary: #3787dd;
-        --primary-hover: #59a0f2;
-      }
+    /* Theme comes from the content script (#theme=… on the iframe URL),
+       matching BALE's palette — the OS scheme may disagree with the page. */
+    :root[data-theme="dark"] {
+      --bg: #101827;
+      --text: #e5edf5;
+      --muted: #95a3b8;
+      --border: #35c88a;
+      --primary: #3787dd;
+      --primary-hover: #59a0f2;
+      --hover: rgba(255, 255, 255, 0.08);
     }
 
     * { box-sizing: border-box; }
 
+    /* Bundled Twemoji (COLR, Apache-2.0 build by Mozilla, CC-BY 4.0 art):
+       consistent emoji across platforms. It only carries emoji glyphs, so
+       putting it AFTER the text fonts leaves text rendering untouched, and
+       glyphs newer than the font fall through to the system emoji font. */
+    @font-face {
+      font-family: "Twemoji";
+      src: url("twemoji.ttf");
+      font-display: swap;
+    }
+
     html, body {
       margin: 0;
       height: 100%;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif, "Twemoji";
     }
 
     body {
       display: flex;
-      align-items: stretch;
-      gap: 8px;
+      flex-direction: column;
       padding: 4px;
       background: var(--bg);
       color: var(--text);
       border: 2px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
+    }
+
+    /* The emoji panel only becomes visible after the content script has
+       granted the iframe extra height; the strip below keeps its size. */
+    #picker {
+      flex: 0 0 auto;
+      height: 196px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: thin;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
+      gap: 2px;
+      align-content: start;
+      padding: 4px 2px;
+    }
+
+    #picker button {
+      border: none;
+      background: transparent;
+      font-family: "Twemoji", sans-serif;
+      font-size: 20px;
+      line-height: 1.4;
+      padding: 2px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #picker button:hover { background: var(--hover); }
+
+    /* The #picker rule outranks .hidden (id vs class), so hide explicitly. */
+    #picker.hidden { display: none; }
+
+    /* Corner tick on emoji that offer skin-tone variants. */
+    #picker button.has-tones { position: relative; }
+    #picker button.has-tones::after {
+      content: "";
+      position: absolute;
+      right: 2px;
+      bottom: 2px;
+      border-style: solid;
+      border-width: 0 0 5px 5px;
+      border-color: transparent transparent var(--muted) transparent;
+    }
+
+    /* Skin-tone popover, opened by long-press / right-click on a base. */
+    .tone-pop {
+      position: fixed;
+      z-index: 10;
+      display: flex;
+      gap: 2px;
+      padding: 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    }
+
+    .tone-pop button {
+      border: none;
+      background: transparent;
+      font-family: "Twemoji", sans-serif;
+      font-size: 20px;
+      line-height: 1.4;
+      padding: 2px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .tone-pop button:hover { background: var(--hover); }
+
+    .picker-group {
+      grid-column: 1 / -1;
+      font-size: 12px;
+      color: var(--muted);
+      padding: 8px 4px 2px;
+      border-bottom: 1px solid var(--hover);
+    }
+
+    #row {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      min-height: 0;
     }
 
     #emblem {
@@ -56,6 +152,20 @@
       cursor: help;
       flex: 0 0 auto;
     }
+
+    #emoji-toggle {
+      flex: 0 0 auto;
+      align-self: center;
+      border: none;
+      background: transparent;
+      font-size: 18px;
+      line-height: 1;
+      padding: 4px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #emoji-toggle:hover { background: var(--hover); }
 
     #input {
       flex: 1 1 auto;
@@ -89,10 +199,13 @@
     #send:hover { background: var(--primary-hover); }
     #send:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    /* Banner over the top edge of the frame: the frame hugs Bale's
+       composer row, so anything positioned above the viewport is clipped
+       and would never be seen. */
     #error {
       position: absolute;
-      inset: auto 8px 100%;
-      margin-bottom: 6px;
+      inset: 4px 8px auto;
+      z-index: 1;
       background: #e5484d;
       color: #fff;
       font-size: 12px;
@@ -104,12 +217,17 @@
   </style>
 </head>
 <body>
-  <div id="emblem" title=""></div>
-  <textarea id="input" rows="1" spellcheck="false"></textarea>
-  <button id="send"></button>
+  <div id="picker" class="hidden"></div>
+  <div id="row">
+    <div id="emblem" title=""></div>
+    <button id="emoji-toggle" type="button">🙂</button>
+    <textarea id="input" rows="1" spellcheck="false"></textarea>
+    <button id="send"></button>
+  </div>
   <div id="error" class="hidden" role="alert"></div>
 
   <script src="i18n.js"></script>
+  <script src="emoji-data.js"></script>
   <script src="composer.js"></script>
 </body>
 </html>

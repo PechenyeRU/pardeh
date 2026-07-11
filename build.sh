@@ -21,6 +21,8 @@ FILES=(
   content.js
   composer.html
   composer.js
+  emoji-data.js
+  twemoji.ttf
   popup.html
   popup.js
   icon-16.png

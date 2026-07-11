@@ -25,6 +25,9 @@
     "waiting_for_peer"
   ]);
   const COMPOSER_ID = "e2e-secure-composer";
+  // Extra height granted to the composer iframe while its emoji panel is
+  // open; the frame grows upward so the input strip stays on Bale's row.
+  const COMPOSER_PANEL_EXTRA = 208;
   const ENCRYPTION_PREFIX = "encryption_enabled_";
   const META_PREFIX = "chat_meta_";
   const LEGACY_KEY_PREFIX = "chat_key_";
@@ -73,6 +76,7 @@
 
     secureComposer: true,
     composerTracker: null,
+    composerPanelExtra: 0,
     dotTracker: null,
     previewSanitizeTimer: null,
     previewObserver: null,
@@ -221,6 +225,12 @@
           handleSendChatMessageCommand(message.text)
             .then(() => sendResponse({ success: true }))
             .catch((err) => sendResponse({ success: false, error: String(err?.message || err) }));
+          return true;
+
+        case "SET_COMPOSER_PANEL":
+          state.composerPanelExtra = message.open ? COMPOSER_PANEL_EXTRA : 0;
+          syncComposerPosition();
+          sendResponse({ success: true });
           return true;
 
         default:
@@ -846,6 +856,8 @@
 
   function removeComposer() {
     stopComposerTracking();
+    // A re-created frame starts with the panel closed.
+    state.composerPanelExtra = 0;
     document.getElementById(COMPOSER_ID)?.remove();
   }
 
@@ -868,11 +880,37 @@
       return;
     }
 
+    // The strip can be taller than the anchor row, and the row sits at the
+    // bottom of the viewport: anchor the frame's BOTTOM to the row's bottom
+    // so the extra height (and the emoji panel) always grows upward instead
+    // of spilling past the window edge.
+    const stripHeight = Math.max(rect.height, 48);
     frame.style.visibility = "visible";
     frame.style.left = `${rect.left}px`;
-    frame.style.top = `${rect.top}px`;
+    frame.style.top = `${rect.bottom - stripHeight - state.composerPanelExtra}px`;
     frame.style.width = `${rect.width}px`;
-    frame.style.height = `${Math.max(rect.height, 48)}px`;
+    frame.style.height = `${stripHeight + state.composerPanelExtra}px`;
+
+    // Keep the composer on Bale's palette; the OS theme may disagree.
+    const theme = pageIsDark() ? "dark" : "light";
+    if (frame.dataset.e2eTheme !== theme) {
+      frame.dataset.e2eTheme = theme;
+      frame.src = api.runtime.getURL(`composer.html#theme=${theme}`);
+    }
+  }
+
+  // Pardeh surfaces overlay Bale, so they must match BALE's theme rather
+  // than the OS one: the browser can be in dark mode while the page
+  // renders light, which would drop dark slabs onto a light app.
+  function pageIsDark() {
+    try {
+      const bg = getComputedStyle(document.body).backgroundColor;
+      const parts = (bg.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+      if (parts.length < 3 || (parts.length === 4 && parts[3] === 0)) return false;
+      return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2] < 128;
+    } catch (_) {
+      return false;
+    }
   }
 
   function startComposerTracking() {
@@ -1165,7 +1203,7 @@
     const dot = document.getElementById(DOT_ID);
     if (!dot || !state.chatId) return;
 
-    const dark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    const dark = pageIsDark();
     const colors = dark
       ? { bg: "#101827", text: "#e5edf5", muted: "#95a3b8", border: "#233147" }
       : { bg: "#ffffff", text: "#18212f", muted: "#667085", border: "#dbe3ee" };
