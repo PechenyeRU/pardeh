@@ -1,6 +1,6 @@
 {
   "name": "pardeh",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "private": true,
   "description": "End-to-end encryption overlay for Bale Web (browser extension)",
   "scripts": {
