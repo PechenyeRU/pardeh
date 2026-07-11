@@ -17,6 +17,8 @@ const ENCRYPTION_PREFIX = "encryption_enabled_";
 const META_PREFIX = "chat_meta_";
 const LEGACY_KEY_PREFIX = "chat_key_";
 const PEER_LEGACY_PREFIX = "peer_legacy_";
+const SEEN_KEYS_PREFIX = "seen_pubkeys_";
+const MAX_SEEN_KEYS = 40;
 const HANDSHAKE_TTL_MS = 10 * 60 * 1000;
 const CONTENT_SCRIPTS = ["crypto.js", "i18n.js", "content.js"];
 
@@ -205,6 +207,16 @@ async function handleHandshakeDetected(chatId, kind, version, pubB64, tabId) {
     return { success: false, error: "invalid_public_key", detail: String(err?.message || err) };
   }
 
+  // A public key from any past epoch (or an offer already surfaced once)
+  // is not a new rekey attempt. Without this, re-scanning the chat history
+  // after a reload re-reads old [[E2EHS..]] messages and mistakes them for
+  // fresh key offers — a false MITM warning on every reload of a chat that
+  // has ever rotated keys.
+  const seen = await getSeenKeys(chatId);
+  if (seen.includes(pubB64)) {
+    return { success: true, ignored: true, reason: "known_key" };
+  }
+
   const context = await loadContext(chatId);
   const act = kind === 1
     ? SM.onHs1Detected(context, pubB64)
@@ -225,6 +237,9 @@ async function handleHandshakeDetected(chatId, kind, version, pubB64, tabId) {
         warnRekey: act.warnRekey,
         createdAt: Date.now()
       });
+      // Remember the offered key so a reload does not re-surface it: the
+      // awaiting_click pending state already persists and drives the UI.
+      await addSeenKey(chatId, act.peerPubB64);
       return { success: true, action: "awaiting_click", warnRekey: act.warnRekey };
 
     case "respond_hs2":
@@ -344,7 +359,8 @@ async function handleClearChatState(chatId) {
     `${ENCRYPTION_PREFIX}${chatId}`,
     `${META_PREFIX}${chatId}`,
     `${LEGACY_KEY_PREFIX}${chatId}`,
-    `${PEER_LEGACY_PREFIX}${chatId}`
+    `${PEER_LEGACY_PREFIX}${chatId}`,
+    `${SEEN_KEYS_PREFIX}${chatId}`
   ]);
   legacyKeyCache.delete(chatId);
 
@@ -448,9 +464,28 @@ async function establishEpoch(chatId, privateKey, peerPublicKey, ourPubB64, peer
     }
   });
 
+  // Both keys of every epoch are "known": a later re-scan of their
+  // handshake messages must not read as a new offer.
+  await addSeenKey(chatId, ourPubB64, peerPubB64);
   await deletePending(chatId);
 
   return { epoch, fingerprint };
+}
+
+async function getSeenKeys(chatId) {
+  const stored = await api.storage.local.get([`${SEEN_KEYS_PREFIX}${chatId}`]);
+  return stored[`${SEEN_KEYS_PREFIX}${chatId}`] || [];
+}
+
+async function addSeenKey(chatId, ...keys) {
+  const current = await getSeenKeys(chatId);
+  const merged = [...current];
+  for (const key of keys) {
+    if (key && !merged.includes(key)) merged.push(key);
+  }
+  // Bound the list; oldest keys fall off first.
+  const trimmed = merged.slice(-MAX_SEEN_KEYS);
+  await api.storage.local.set({ [`${SEEN_KEYS_PREFIX}${chatId}`]: trimmed });
 }
 
 // ---------------------------------------------------------------------------
