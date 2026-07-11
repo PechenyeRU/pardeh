@@ -1270,6 +1270,46 @@
       menu.appendChild(hsBtn);
     }
 
+    // A handshake in any state (in flight or established) can be restarted
+    // from here: a stuck exchange would otherwise dead-end on the disabled
+    // "waiting" button with no way out short of opening the popup.
+    if (state.chat?.pendingStage || state.chat?.v2Ready) {
+      const restartBtn = document.createElement("button");
+      restartBtn.textContent = tr("menuRestartHandshake");
+      restartBtn.style.cssText = buttonCss;
+      let armed = false;
+      restartBtn.addEventListener("click", async () => {
+        if (!armed) {
+          armed = true;
+          restartBtn.textContent = tr("btnConfirm");
+          setTimeout(() => {
+            armed = false;
+            restartBtn.textContent = tr("menuRestartHandshake");
+          }, 4000);
+          return;
+        }
+        closeStatusMenu();
+        const res = await safeSendToBackground("ROTATE_KEYS", { chatId: state.chatId });
+        reportClickFeedback(res);
+      });
+      menu.appendChild(restartBtn);
+    }
+
+    // The popup header has the same switch, but this menu is the surface
+    // users actually reach; the label names the OTHER language in its own
+    // script so it stays readable from either side.
+    const langBtn = document.createElement("button");
+    langBtn.textContent = state.uiLanguage === "fa" ? "🌐 English" : "🌐 فارسی";
+    langBtn.style.cssText = buttonCss;
+    langBtn.addEventListener("click", async () => {
+      closeStatusMenu();
+      try {
+        // The storage listener picks the change up and relabels everything.
+        await api.storage.local.set({ [I18n.STORAGE_KEY]: I18n.next(state.uiLanguage) });
+      } catch (_) {}
+    });
+    menu.appendChild(langBtn);
+
     document.body.appendChild(menu);
     setTimeout(() => {
       document.addEventListener("click", onDocumentClickForMenu, true);
@@ -1295,6 +1335,7 @@
 
     const messages = {
       sent_hs1: ["statusSentHs1", "info"],
+      sent_hs1_rotation: ["statusRotation", "warn"],
       sent_hs2_key_established: ["statusEstablished", "success"],
       key_established: ["statusEstablished", "success"],
       waiting_for_peer: ["statusWaiting", "info"],

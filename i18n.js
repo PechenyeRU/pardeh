@@ -111,6 +111,7 @@ const PARDEH_DICTIONARIES = {
     menuCompleteHandshake: "Complete handshake",
     menuAcceptKey: "Accept new key",
     menuWaitingPeer: "Waiting for peer…",
+    menuRestartHandshake: "Restart handshake",
     menuCompareHint: "Compare with your contact over another channel.",
 
     // Content: inline decrypt errors
@@ -210,6 +211,7 @@ const PARDEH_DICTIONARIES = {
     menuCompleteHandshake: "تکمیل تبادل کلید",
     menuAcceptKey: "پذیرش کلید جدید",
     menuWaitingPeer: "در انتظار مخاطب…",
+    menuRestartHandshake: "شروع مجدد تبادل کلید",
     menuCompareHint: "این شماره را از راه دیگری با مخاطب مقایسه کنید.",
 
     errNoKey: "رمز شده — کلیدی روی این دستگاه نیست",
