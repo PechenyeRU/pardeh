@@ -87,14 +87,14 @@ The Firefox package is **not signed** (AMO signing would tie the add-on to a nam
 {
   "ExtensionSettings": {
     "gafeecfbmpdmhobcpcnppplibbipjonn": {
-      "installation_mode": "normal_installed",
+      "installation_mode": "force_installed",
       "update_url": "https://github.com/PechenyeRU/pardeh/releases/latest/download/updates.xml"
     }
   }
 }
 ```
 
-Restart the browser; it fetches `updates.xml` → the `.crx` and installs it (`normal_installed` lets you disable/remove it; use `force_installed` to pin it). Because the manifest's `update_url` and every release point at the same key, managed installs stay current automatically. On Windows/macOS set the same `ExtensionSettings` via registry / configuration profile.
+Restart the browser; it fetches `updates.xml` → the `.crx` and installs it, staying current automatically. Use **`force_installed`**, not `normal_installed`: only `force_installed` bypasses Chromium's `CRX_REQUIRED_PROOF_MISSING` check for a self-hosted (non-store) extension — `normal_installed` still expects a Web Store proof and fails to install. `force_installed` pins the extension (the user can't remove it). On Windows/macOS set the same `ExtensionSettings` via registry / configuration profile.
 
 ### Building & releasing
 
