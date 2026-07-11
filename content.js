@@ -1467,7 +1467,11 @@
       const v = n.nodeValue;
       const next = v
         .replace(/\[\[E2EHS[12]:[^\]]*\]\]/g, hs)
-        .replace(/E2EHS[12]:[A-Za-z0-9+/=]{20,}/g, hs)
+        // Truncated previews lose the closing "]]", and since v2 a ":"
+        // follows the version segment, so the plain base64 run after the
+        // marker is too short for the legacy pattern. Swallow an optional
+        // leading "[[" and version segment explicitly.
+        .replace(/\[?\[?E2EHS[12]:(?:v\d+:)?[A-Za-z0-9+/=]{8,}\S*/g, hs)
         .replace(/E2EMSG:\S+/g, enc);
       if (next !== v) n.nodeValue = next;
     }
