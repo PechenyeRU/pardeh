@@ -67,6 +67,7 @@ const PARDEH_DICTIONARIES = {
     menuComposerOn: "Use secure message box",
     menuComposerOff: "Use the website's message box",
     handshakeBadge: "key exchange",
+    previewEncrypted: "Encrypted message",
 
     // Popup: banners
     rekeyWarning: "The contact sent a new key offer. Accept it only if they told you they rotated keys, then compare the new safety number out-of-band.",
@@ -169,6 +170,7 @@ const PARDEH_DICTIONARIES = {
     menuComposerOn: "استفاده از کادر پیام امن",
     menuComposerOff: "استفاده از کادر پیام وب‌سایت",
     handshakeBadge: "تبادل کلید",
+    previewEncrypted: "پیام رمز شده",
 
     rekeyWarning: "مخاطب شما کلید جدیدی پیشنهاد داده است. فقط اگر خودش تأیید کرده که کلید را عوض کرده بپذیرید و سپس شمارهٔ امنیتی جدید را از راه دیگری مقایسه کنید.",
     legacyPeerWarning: "مخاطب شما نسخهٔ قدیمی پرده را اجرا می‌کند. پیش از تبادل کلید از او بخواهید به‌روزرسانی کند.",

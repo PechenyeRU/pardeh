@@ -74,6 +74,8 @@
     secureComposer: true,
     composerTracker: null,
     dotTracker: null,
+    previewSanitizeTimer: null,
+    previewObserver: null,
 
     handlersAttached: false,
     onRuntimeMessage: null,
@@ -150,6 +152,8 @@
     observeMessages(true);
     await scanExistingMessages();
     updateEncryptionStatusUI();
+    startPreviewObserver();
+    scheduleSanitizePreviews();
 
     console.log("[E2E] Initialized for chat:", state.chatId);
   }
@@ -163,9 +167,11 @@
       if (state.attachRetryTimer) clearTimeout(state.attachRetryTimer);
       if (state.initTimer) clearTimeout(state.initTimer);
       if (state.decryptTimer) clearTimeout(state.decryptTimer);
+      if (state.previewSanitizeTimer) clearTimeout(state.previewSanitizeTimer);
 
       if (state.messageObserver) state.messageObserver.disconnect();
       if (state.domObserver) state.domObserver.disconnect();
+      if (state.previewObserver) state.previewObserver.disconnect();
 
       if (state.sendButton && state._sendClickHandler) {
         state.sendButton.removeEventListener("click", state._sendClickHandler, true);
@@ -428,6 +434,7 @@
       }
 
       updateComposer();
+      scheduleSanitizePreviews();
     });
 
     state.domObserver.observe(document.documentElement || document.body, {
@@ -1385,6 +1392,73 @@
       // the base64 visible.
       bubble.style.display = "none";
     }
+  }
+
+  // Bale's conversation-list sidebar (and notifications) preview the last
+  // message as raw text, so our envelopes show up there as base64 walls.
+  // Those nodes live OUTSIDE the open chat view (handled by the message
+  // pipeline), so replace the marker text in place with a placeholder.
+  // Idempotent — re-runs whenever Bale re-renders a preview.
+  function sanitizeCiphertextPreviews() {
+    if (state.destroyed || !document.body) return;
+
+    const container = findMessageContainer();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const v = node.nodeValue;
+        if (!v || (!v.includes("E2EMSG:") && !v.includes("E2EHS"))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    const targets = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      if (container && container.contains(node)) continue; // chat view: handled elsewhere
+      targets.push(node);
+    }
+
+    const hs = `🤝 ${tr("handshakeBadge")}`;
+    const enc = `🔒 ${tr("previewEncrypted")}`;
+    for (const n of targets) {
+      const v = n.nodeValue;
+      const next = v
+        .replace(/\[\[E2EHS[12]:[^\]]*\]\]/g, hs)
+        .replace(/E2EHS[12]:[A-Za-z0-9+/=]{20,}/g, hs)
+        .replace(/E2EMSG:\S+/g, enc);
+      if (next !== v) n.nodeValue = next;
+    }
+  }
+
+  function scheduleSanitizePreviews() {
+    if (state.destroyed || state.previewSanitizeTimer) return;
+    state.previewSanitizeTimer = setTimeout(() => {
+      state.previewSanitizeTimer = null;
+      try {
+        sanitizeCiphertextPreviews();
+      } catch (err) {
+        console.error("[E2E] sanitizeCiphertextPreviews failed:", err);
+      }
+    }, 250);
+  }
+
+  // Bale updates a conversation-list preview by mutating its text node
+  // (characterData), which the childList DOM watcher misses. A dedicated
+  // observer catches those so the placeholder is reapplied; the throttle
+  // coalesces bursts so this stays cheap.
+  function startPreviewObserver() {
+    if (state.previewObserver || !document.body) return;
+    state.previewObserver = new MutationObserver(() => {
+      if (state.destroyed) return;
+      scheduleSanitizePreviews();
+    });
+    state.previewObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
   }
 
   function renderDecryptError(textElement, message = tr("errAuthFailed")) {
