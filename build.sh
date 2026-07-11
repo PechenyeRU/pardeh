@@ -71,6 +71,9 @@ m["browser_specific_settings"] = {
     "gecko": {
         "id": "pardeh@e2e-encryption.bale.ai",
         "strict_min_version": "115.0",
+        # AMO requires declaring data collection. Pardeh collects/transmits
+        # nothing (all E2E crypto is local), so declare "none".
+        "data_collection_permissions": {"required": ["none"]},
     }
 }
 
