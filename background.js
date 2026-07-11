@@ -142,6 +142,13 @@ async function handleGetChatState(chatId) {
 
   const meta = stored[`${META_PREFIX}${chatId}`] || null;
 
+  // Read-only view: an expired pending is reported as absent so the UI
+  // offers a fresh start instead of a dead "waiting for peer" state. The
+  // pending itself is only retired by the next state-changing handler
+  // through loadContext; this getter runs outside the chat lock.
+  const live =
+    pending && !SM.isExpired(pending, Date.now(), HANDSHAKE_TTL_MS) ? pending : null;
+
   return {
     success: true,
     enabled: !!stored[`${ENCRYPTION_PREFIX}${chatId}`],
@@ -150,8 +157,8 @@ async function handleGetChatState(chatId) {
     epoch: meta?.epoch ?? 0,
     fingerprint: meta?.fingerprint ?? null,
     establishedAt: meta?.establishedAt ?? null,
-    pendingStage: pending?.stage ?? null,
-    warnRekey: !!pending?.warnRekey,
+    pendingStage: live?.stage ?? null,
+    warnRekey: !!live?.warnRekey,
     peerLegacy: !!stored[`${PEER_LEGACY_PREFIX}${chatId}`]
   };
 }
@@ -185,7 +192,7 @@ async function handleRotateKeys(chatId, tabId) {
 
   // Rotation is an explicit fresh handshake. The current epoch keys stay
   // in place (and keep decrypting history) until the new epoch finalizes.
-  await deletePending(chatId);
+  await retirePending(chatId, await getPending(chatId));
   return sendHs1(chatId, tabId, { rotation: true });
 }
 
@@ -369,7 +376,7 @@ async function handleClearChatState(chatId) {
   ]);
   legacyKeyCache.delete(chatId);
 
-  await deletePending(chatId);
+  await retirePending(chatId, await getPending(chatId));
   await deleteAllChatKeys(chatId);
 
   return { success: true };
@@ -386,6 +393,12 @@ async function sendHs1(chatId, tabId, { rotation = false } = {}) {
   // Deliver first, persist after: if delivery fails nothing is stored and
   // the user simply retries the click from a clean state.
   await sendChatMessage(tabId, Crypto.buildHandshakeMessage(1, ourPubB64));
+
+  // Ledger our own key the moment it is on the wire: once the pending
+  // state expires or is cleared nothing else remembers this key, and a
+  // history re-scan would read our own HS1 back as a fresh peer offer —
+  // answering that offer completes a handshake with ourselves.
+  await addSeenKey(chatId, ourPubB64);
 
   await putPending(chatId, {
     stage: "hs1_sent",
@@ -500,11 +513,20 @@ async function addSeenKey(chatId, ...keys) {
 async function loadContext(chatId) {
   let pending = await getPending(chatId);
   if (pending && SM.isExpired(pending, Date.now(), HANDSHAKE_TTL_MS)) {
-    await deletePending(chatId);
+    await retirePending(chatId, pending);
     pending = null;
   }
   const keyMeta = await getMeta(chatId);
   return { pending, keyMeta };
+}
+
+// Drop an in-flight handshake, first ledgering the key it announced (if
+// any). Pendings written by builds that predate the sendHs1 ledgering
+// only remember their key here: without this, their HS1 in chat history
+// would resurface as a peer offer after the pending is gone.
+async function retirePending(chatId, pending) {
+  if (pending?.ourPubB64) await addSeenKey(chatId, pending.ourPubB64);
+  await deletePending(chatId);
 }
 
 async function getMeta(chatId) {
