@@ -73,6 +73,8 @@
 
     secureComposer: true,
     composerTracker: null,
+    dotTracker: null,
+    headerToolbar: null,
 
     handlersAttached: false,
     onRuntimeMessage: null,
@@ -188,6 +190,7 @@
 
       closeStatusMenu();
       removeComposer();
+      stopDotTracking();
       document.getElementById(DOT_ID)?.remove();
       document.getElementById("e2e-toast-container")?.remove();
     } catch (_) {}
@@ -569,6 +572,11 @@
     // (chat, marker) — echoes and duplicates are also filtered over there.
     const handshake = Crypto.parseHandshakeText(fullText);
     if (handshake) {
+      // Always collapse the raw [[E2EHS..]] bubble to a tidy badge, even
+      // on re-scan of an already-reported marker (the bubble is a fresh
+      // DOM node after every SPA re-render).
+      collapseHandshakeBubble(messageElement);
+
       const cacheKey = buildProcessedKey(`hs${handshake.kind}:${handshake.pubB64}`);
       if (cacheKey && state.processedCache.has(cacheKey)) return;
       markProcessed(cacheKey);
@@ -973,18 +981,19 @@
   }
 
   // -------------------------------------------------------------------------
-  // Status dot: a small circle next to the chat header (falls back to a
-  // fixed corner spot when the header cannot be found) replacing the old
-  // floating badge that overlapped the send button on narrow windows.
-  // Clicking it opens a quick menu with toggle, handshake and the safety
-  // number.
+  // Status dot: a small circle aligned to the chat header. It lives as a
+  // position:fixed element in <body> — NOT inside Bale's header — because
+  // Bale re-renders the header on navigation and reload, which would take
+  // an injected child with it (the dot would vanish). Instead its screen
+  // position is tracked to the header bar, falling back to a fixed corner
+  // when no header is found. Clicking it opens a quick menu.
   // -------------------------------------------------------------------------
 
   const DOT_ID = "e2e-status-dot";
   const MENU_ID = "e2e-status-menu";
 
   function updateEncryptionStatusUI() {
-    // Remove the pre-2.0 floating badge if an old build left one behind.
+    // Remove pre-2.0 / older-build leftovers.
     document.getElementById("e2e-status-indicator")?.remove();
 
     const dot = ensureStatusDot();
@@ -994,6 +1003,7 @@
     dot.style.background = color;
     dot.title = label;
     dot.setAttribute("aria-label", label);
+    syncDotPosition();
 
     // Refresh the menu if it is open.
     if (document.getElementById(MENU_ID)) {
@@ -1033,50 +1043,103 @@
       const el = document.querySelector(selector);
       if (el) return el;
     }
-    return null;
+
+    return findHeaderToolbarHeuristic();
+  }
+
+  // Bale's chat header carries only obfuscated class names, so match it by
+  // shape instead: the top-of-viewport bar that holds several action
+  // controls (call, video, search, menu). Cached until it detaches.
+  function findHeaderToolbarHeuristic() {
+    if (state.headerToolbar?.isConnected) return state.headerToolbar;
+    state.headerToolbar = null;
+
+    let best = null;
+    let bestDepth = -1;
+    for (const el of document.querySelectorAll("header, nav, div")) {
+      const r = el.getBoundingClientRect();
+      if (r.top > 12 || r.height < 40 || r.height > 76 || r.width < 320) continue;
+
+      const controls = el.querySelectorAll('button, [role="button"], svg').length;
+      if (controls < 3) continue;
+
+      // Deepest matching bar is the most specific (the toolbar itself,
+      // not an ancestor wrapper).
+      let depth = 0;
+      for (let n = el; n; n = n.parentElement) depth++;
+      if (depth > bestDepth) {
+        best = el;
+        bestDepth = depth;
+      }
+    }
+
+    state.headerToolbar = best;
+    return best;
   }
 
   function ensureStatusDot() {
     let dot = document.getElementById(DOT_ID);
-    const host = findHeaderHost();
+    if (dot?.isConnected) return dot;
 
-    if (dot) {
-      const inHeader = !!host && host.contains(dot);
-      const isFallback = dot.dataset.fallback === "1";
-      // Keep it where it is unless it got detached or a header appeared
-      // while we were on the fallback position.
-      if (dot.isConnected && (inHeader || (isFallback && !host))) return dot;
-      dot.remove();
-    }
-
-    dot = document.createElement("span");
+    dot = document.createElement("div");
     dot.id = DOT_ID;
     dot.style.cssText = `
-      display: inline-block;
+      position: fixed;
       width: 12px;
       height: 12px;
       border-radius: 50%;
-      margin: 0 8px;
-      flex: 0 0 auto;
-      align-self: center;
       cursor: pointer;
-      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08);
+      z-index: 2147483646;
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.12);
       background: #9e9e9e;
+      visibility: hidden;
     `;
-
-    if (host) {
-      host.appendChild(dot);
-    } else {
-      dot.dataset.fallback = "1";
-      dot.style.position = "fixed";
-      dot.style.top = "72px";
-      dot.style.right = "16px";
-      dot.style.zIndex = "2147483646";
-      document.body.appendChild(dot);
-    }
-
+    document.body.appendChild(dot);
     dot.addEventListener("click", onDotClick);
+
+    startDotTracking();
     return dot;
+  }
+
+  // Keep the fixed dot glued to the right end of the header bar (just
+  // inside its action buttons), or to a top-right corner when there is no
+  // header yet.
+  function syncDotPosition() {
+    const dot = document.getElementById(DOT_ID);
+    if (!dot) return;
+
+    const host = findHeaderHost();
+    const r = host?.getBoundingClientRect();
+
+    if (r && r.width > 40 && r.height > 16 && r.top < 120) {
+      dot.style.top = `${Math.round(r.top + r.height / 2 - 6)}px`;
+      dot.style.left = `${Math.round(r.right - 20)}px`;
+    } else {
+      dot.style.top = "72px";
+      dot.style.left = `${window.innerWidth - 28}px`;
+    }
+    dot.style.visibility = "visible";
+  }
+
+  function startDotTracking() {
+    if (state.dotTracker) return;
+
+    const onChange = () => syncDotPosition();
+    window.addEventListener("resize", onChange);
+    window.addEventListener("scroll", onChange, true);
+    const interval = setInterval(onChange, 300);
+
+    state.dotTracker = () => {
+      window.removeEventListener("resize", onChange);
+      window.removeEventListener("scroll", onChange, true);
+      clearInterval(interval);
+    };
+  }
+
+  function stopDotTracking() {
+    if (!state.dotTracker) return;
+    state.dotTracker();
+    state.dotTracker = null;
   }
 
   function onDotClick(e) {
@@ -1297,6 +1360,40 @@
     root.appendChild(text);
     textElement.appendChild(host);
     addDecryptedMessageIndicator(textElement);
+  }
+
+  // The [[E2EHS1/2:...]] handshake messages are real chat messages, so
+  // they show up as walls of base64. They cannot be deleted from Bale
+  // without its (unavailable) delete API, so collapse the bubble in place
+  // to a small "🤝 key exchange" badge. Idempotent per bubble.
+  function collapseHandshakeBubble(messageElement) {
+    const bubble =
+      messageElement.closest('[data-sentry-component="BaseBubbleFC"]') ||
+      messageElement.closest('[data-sentry-component="Message"]') ||
+      messageElement.closest(".message-item") ||
+      messageElement;
+
+    if (bubble.dataset.e2eHsCollapsed === "1") return;
+    bubble.dataset.e2eHsCollapsed = "1";
+
+    // The base64 lives in a leaf node; replacing just that keeps the
+    // bubble chrome (timestamp, ticks) intact.
+    const holder = [...bubble.querySelectorAll("*")].find(
+      (n) => n.children.length === 0 && /E2EHS[12]:/.test(n.textContent || "")
+    );
+
+    const badge = document.createElement("span");
+    badge.textContent = `🤝 ${tr("handshakeBadge")}`;
+    badge.style.cssText = "font-style: italic; opacity: 0.6; font-size: 0.9em;";
+
+    if (holder) {
+      holder.textContent = "";
+      holder.appendChild(badge);
+    } else {
+      // No isolated leaf found: hide the whole bubble rather than leave
+      // the base64 visible.
+      bubble.style.display = "none";
+    }
   }
 
   function renderDecryptError(textElement, message = tr("errAuthFailed")) {

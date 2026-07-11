@@ -66,6 +66,7 @@ const PARDEH_DICTIONARIES = {
     emblemHint: "The secure message box always shows these three emoji. A fake box drawn by the website cannot know them.",
     menuComposerOn: "Use secure message box",
     menuComposerOff: "Use the website's message box",
+    handshakeBadge: "key exchange",
 
     // Popup: banners
     rekeyWarning: "The contact sent a new key offer. Accept it only if they told you they rotated keys, then compare the new safety number out-of-band.",
@@ -167,6 +168,7 @@ const PARDEH_DICTIONARIES = {
     emblemHint: "کادر پیام امن همیشه این سه ایموجی را نشان می‌دهد. کادر جعلی که وب‌سایت بکشد نمی‌تواند آن‌ها را بداند.",
     menuComposerOn: "استفاده از کادر پیام امن",
     menuComposerOff: "استفاده از کادر پیام وب‌سایت",
+    handshakeBadge: "تبادل کلید",
 
     rekeyWarning: "مخاطب شما کلید جدیدی پیشنهاد داده است. فقط اگر خودش تأیید کرده که کلید را عوض کرده بپذیرید و سپس شمارهٔ امنیتی جدید را از راه دیگری مقایسه کنید.",
     legacyPeerWarning: "مخاطب شما نسخهٔ قدیمی پرده را اجرا می‌کند. پیش از تبادل کلید از او بخواهید به‌روزرسانی کند.",
