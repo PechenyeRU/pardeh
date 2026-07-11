@@ -1,17 +1,17 @@
 name: release
 
 # Packages the extension and publishes a GitHub Release with:
-#   - pardeh-<v>-chrome.zip   (unpacked / dev: Load unpacked)
-#   - pardeh-<v>-chrome.crx   (signed CRX3, stable ID, for enterprise policy)
-#   - updates.xml             (Chrome self-host update manifest)
-#   - pardeh-<v>-firefox.xpi  (unsigned; temporary add-on / ESR)
-#
-# Firefox is intentionally NOT signed: AMO signing would tie the add-on to
-# a named Mozilla developer account.
+#   - pardeh-<v>-chrome.zip          (unpacked / dev: Load unpacked)
+#   - pardeh-<v>-chrome.crx          (signed CRX3, stable ID, for policy install)
+#   - updates.xml                    (Chrome self-host update manifest)
+#   - pardeh-<v>-firefox.xpi         (unsigned; temporary add-on / ESR)
+#   - pardeh-<v>-firefox-signed.xpi  (AMO-unlisted signed; only when the AMO
+#                                     API secrets are set — one-click install)
 #
 # Triggered by pushing a version tag (v*), or manually (builds artifacts,
-# no release). Secret used:
-#   CHROME_CRX_PRIVATE_KEY  (required for the .crx)
+# no release). Secrets:
+#   CHROME_CRX_PRIVATE_KEY                (required for the .crx)
+#   WEB_EXT_API_KEY / WEB_EXT_API_SECRET  (optional; AMO unlisted signing)
 
 on:
   push:
@@ -79,6 +79,36 @@ jobs:
           echo "Packed dist/pardeh-${VERSION}-chrome.crx (ID: gafeecfbmpdmhobcpcnppplibbipjonn)"
           cat dist/updates.xml
 
+      - name: Sign Firefox xpi (AMO unlisted)
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          set -uo pipefail
+          if [ -z "${WEB_EXT_API_KEY:-}" ] || [ -z "${WEB_EXT_API_SECRET:-}" ]; then
+            echo "AMO API secrets not set — skipping Firefox signing (unsigned xpi only)."
+            exit 0
+          fi
+          VERSION="$(node -p "require('./manifest.json').version")"
+          rm -rf ffbuild && mkdir ffbuild
+          (cd ffbuild && unzip -q "../dist/pardeh-${VERSION}-firefox.xpi")
+          # web-ext sign uploads the version to AMO and returns a signed xpi.
+          # A version already on AMO makes it fail; don't kill the release, just
+          # attach the unsigned xpi in that case.
+          if npx --yes web-ext sign \
+               --source-dir=ffbuild \
+               --channel=unlisted \
+               --api-key="$WEB_EXT_API_KEY" \
+               --api-secret="$WEB_EXT_API_SECRET"; then
+            signed="$(ls web-ext-artifacts/*.xpi 2>/dev/null | head -1)"
+            if [ -n "$signed" ]; then
+              cp "$signed" "dist/pardeh-${VERSION}-firefox-signed.xpi"
+              echo "Signed: dist/pardeh-${VERSION}-firefox-signed.xpi"
+            fi
+          else
+            echo "::warning::web-ext sign failed (version may already exist on AMO); attaching unsigned xpi only."
+          fi
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -97,10 +127,16 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./manifest.json').version")"
+          assets=(
+            "dist/pardeh-${VERSION}-chrome.zip"
+            "dist/pardeh-${VERSION}-chrome.crx"
+            "dist/updates.xml"
+            "dist/pardeh-${VERSION}-firefox.xpi"
+          )
+          if [ -f "dist/pardeh-${VERSION}-firefox-signed.xpi" ]; then
+            assets+=("dist/pardeh-${VERSION}-firefox-signed.xpi")
+          fi
           gh release create "$GITHUB_REF_NAME" \
-            "dist/pardeh-${VERSION}-chrome.zip" \
-            "dist/pardeh-${VERSION}-chrome.crx" \
-            "dist/updates.xml" \
-            "dist/pardeh-${VERSION}-firefox.xpi" \
+            "${assets[@]}" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
