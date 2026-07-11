@@ -23,7 +23,9 @@ FILES=(
   composer.js
   popup.html
   popup.js
-  icon.png
+  icon-16.png
+  icon-48.png
+  icon-128.png
 )
 
 rm -rf "$DIST_DIR"
@@ -67,14 +69,19 @@ m["web_accessible_resources"] = [
     for path in entry["resources"]
 ]
 
+# data_collection_permissions needs Firefox 140 (desktop) / 142 (Android);
+# set the minimums accordingly so AMO doesn't warn about older targets.
 m["browser_specific_settings"] = {
     "gecko": {
         "id": "pardeh@e2e-encryption.bale.ai",
-        "strict_min_version": "115.0",
+        "strict_min_version": "140.0",
         # AMO requires declaring data collection. Pardeh collects/transmits
         # nothing (all E2E crypto is local), so declare "none".
         "data_collection_permissions": {"required": ["none"]},
-    }
+    },
+    "gecko_android": {
+        "strict_min_version": "142.0",
+    },
 }
 
 with open(sys.argv[1], "w") as f:

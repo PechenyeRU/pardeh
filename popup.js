@@ -104,8 +104,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     const div = document.createElement("div");
     div.className = "log-entry";
 
-    const time = new Date().toLocaleTimeString();
-    div.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span>`;
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "log-time";
+    timeSpan.textContent = `[${new Date().toLocaleTimeString()}]`;
+
+    const msgSpan = document.createElement("span");
+    msgSpan.className = `log-${type}`;
+    msgSpan.textContent = msg;
+
+    div.append(timeSpan, document.createTextNode(" "), msgSpan);
     logsEl.prepend(div);
   }
 

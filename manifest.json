@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pardeh",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "End-to-end encryption overlay for Bale Web.",
   "minimum_chrome_version": "114",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxrFKFlfgaJuP7Bg8kFOeBl+Th9UKNG0/sYqAmZ/VDG+Rme0d76cB8BcITD2ORqZYWc87Y68ycxrmm8jx0jDJExffITS+FpkLIC9hfzNIEc3n3SadzkQ9yk8540fglC8fImdQtK3JY/nvdAuPLqFPsGHLMuYZYnIFEtXo8VE5NDZR6FY/lUo0hPdfR4BnQs8V35g97E2wocQZsXBPKrPNA82ze3c5AqtNlKRX/w8xcUMhSGSEF74vfWrZwiv+ZbD+NosLLzO/gPztleGrj3HhyZwo2e4eFxcAppYd4m2GaH5mkahZHGQRWUz2NBi42jKXolvjnyfISGkFfK1pfejRvwIDAQAB",
@@ -34,8 +34,8 @@
     }
   ],
   "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icon-16.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
   }
 }
