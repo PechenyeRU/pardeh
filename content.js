@@ -13,6 +13,17 @@
 
   const INSTANCE_KEY = "__e2eExtensionInstance";
   const COMPOSER_PREF_KEY = "secure_composer";
+
+  // Background handshake outcomes that change what the dot/menu must show.
+  const HS_STATE_CHANGING_ACTIONS = new Set([
+    "awaiting_click",
+    "stored_peer_hs1",
+    "sent_hs1",
+    "sent_hs1_rotation",
+    "sent_hs2_key_established",
+    "key_established",
+    "waiting_for_peer"
+  ]);
   const COMPOSER_ID = "e2e-secure-composer";
   const ENCRYPTION_PREFIX = "encryption_enabled_";
   const META_PREFIX = "chat_meta_";
@@ -572,6 +583,14 @@
         pubB64: handshake.pubB64
       });
       reportHandshakeFeedback(res);
+
+      // A detection that moved the handshake forward changes what the dot
+      // and its menu should show (offer to accept, or an established key).
+      // The pending state lives in the background's IndexedDB, which does
+      // not fire storage.onChanged, so reload the snapshot explicitly.
+      if (res?.success && HS_STATE_CHANGING_ACTIONS.has(res.action)) {
+        await reloadChatState();
+      }
       return;
     }
 
@@ -1223,6 +1242,11 @@
 
     const entry = messages[res.action];
     if (entry) showToast(tr(entry[0]), entry[1]);
+
+    // Reflect the new pending/established state in the dot immediately.
+    if (res.success && HS_STATE_CHANGING_ACTIONS.has(res.action)) {
+      reloadChatState().catch((err) => console.error("[E2E] reload after click failed:", err));
+    }
   }
 
   function detectTextDirection(text) {
