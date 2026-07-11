@@ -355,12 +355,17 @@ async function decryptOne(chatId, envelope) {
 async function handleClearChatState(chatId) {
   if (!chatId) return { success: false, error: "Missing chatId" };
 
+  // Note: the seen-keys ledger is intentionally NOT removed. Bale's chat
+  // history still holds every past [[E2EHS..]] message, and its message
+  // list is virtualized — old nodes are re-added as the user scrolls, so
+  // the observer keeps re-seeing them. Keeping the ledger means those old
+  // markers stay ignored after a clear; a new handshake uses fresh keys
+  // (never in the ledger) and still goes through.
   await api.storage.local.remove([
     `${ENCRYPTION_PREFIX}${chatId}`,
     `${META_PREFIX}${chatId}`,
     `${LEGACY_KEY_PREFIX}${chatId}`,
-    `${PEER_LEGACY_PREFIX}${chatId}`,
-    `${SEEN_KEYS_PREFIX}${chatId}`
+    `${PEER_LEGACY_PREFIX}${chatId}`
   ]);
   legacyKeyCache.delete(chatId);
 

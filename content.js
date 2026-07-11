@@ -74,7 +74,6 @@
     secureComposer: true,
     composerTracker: null,
     dotTracker: null,
-    headerToolbar: null,
 
     handlersAttached: false,
     onRuntimeMessage: null,
@@ -555,14 +554,14 @@
 
     for (const item of candidates) {
       try {
-        await processNewMessage(item);
+        await processNewMessage(item, { historical: true });
       } catch (err) {
         console.error("[E2E] scanExistingMessages item failed:", err);
       }
     }
   }
 
-  async function processNewMessage(messageElement) {
+  async function processNewMessage(messageElement, { historical = false } = {}) {
     if (state.destroyed) return;
 
     const fullText = messageElement.textContent?.trim();
@@ -576,6 +575,13 @@
       // on re-scan of an already-reported marker (the bubble is a fresh
       // DOM node after every SPA re-render).
       collapseHandshakeBubble(messageElement);
+
+      // Handshakes in chat history (initial scan) must not create fresh
+      // key offers: re-reading old [[E2EHS..]] on every chat open would
+      // otherwise resurrect stale offers and, after a clear, drive both
+      // sides to answer mismatched keys. Only process a historical marker
+      // when it could complete a handshake WE are still waiting on.
+      if (historical && state.chat?.pendingStage !== "hs1_sent") return;
 
       const cacheKey = buildProcessedKey(`hs${handshake.kind}:${handshake.pubB64}`);
       if (cacheKey && state.processedCache.has(cacheKey)) return;
@@ -1029,53 +1035,6 @@
     return { color: "#9e9e9e", label: tr("dotOff") };
   }
 
-  function findHeaderHost() {
-    const candidates = [
-      '[data-sentry-component="ChatInfoFC"]',
-      '[data-sentry-component="ChatInfo"]',
-      '[data-sentry-component="ChatHeaderFC"]',
-      '[data-sentry-component="HeaderFC"]',
-      "main header",
-      "header"
-    ];
-
-    for (const selector of candidates) {
-      const el = document.querySelector(selector);
-      if (el) return el;
-    }
-
-    return findHeaderToolbarHeuristic();
-  }
-
-  // Bale's chat header carries only obfuscated class names, so match it by
-  // shape instead: the top-of-viewport bar that holds several action
-  // controls (call, video, search, menu). Cached until it detaches.
-  function findHeaderToolbarHeuristic() {
-    if (state.headerToolbar?.isConnected) return state.headerToolbar;
-    state.headerToolbar = null;
-
-    let best = null;
-    let bestDepth = -1;
-    for (const el of document.querySelectorAll("header, nav, div")) {
-      const r = el.getBoundingClientRect();
-      if (r.top > 12 || r.height < 40 || r.height > 76 || r.width < 320) continue;
-
-      const controls = el.querySelectorAll('button, [role="button"], svg').length;
-      if (controls < 3) continue;
-
-      // Deepest matching bar is the most specific (the toolbar itself,
-      // not an ancestor wrapper).
-      let depth = 0;
-      for (let n = el; n; n = n.parentElement) depth++;
-      if (depth > bestDepth) {
-        best = el;
-        bestDepth = depth;
-      }
-    }
-
-    state.headerToolbar = best;
-    return best;
-  }
 
   function ensureStatusDot() {
     let dot = document.getElementById(DOT_ID);
@@ -1101,24 +1060,56 @@
     return dot;
   }
 
-  // Keep the fixed dot glued to the right end of the header bar (just
-  // inside its action buttons), or to a top-right corner when there is no
-  // header yet.
+  // Anchor the dot just left of the chat header's action buttons. The
+  // anchor is scoped to the CHAT column (derived from the message area) so
+  // Bale's two-pane layout does not make it latch onto the contact-list
+  // bar on the left when the window is wide.
   function syncDotPosition() {
     const dot = document.getElementById(DOT_ID);
     if (!dot) return;
 
-    const host = findHeaderHost();
-    const r = host?.getBoundingClientRect();
-
-    if (r && r.width > 40 && r.height > 16 && r.top < 120) {
-      dot.style.top = `${Math.round(r.top + r.height / 2 - 6)}px`;
-      dot.style.left = `${Math.round(r.right - 20)}px`;
+    const anchor = findHeaderAnchor();
+    if (anchor) {
+      dot.style.top = `${Math.round(anchor.y - 6)}px`;
+      dot.style.left = `${Math.round(anchor.x - 22)}px`;
     } else {
-      dot.style.top = "72px";
+      dot.style.top = "20px";
       dot.style.left = `${window.innerWidth - 28}px`;
     }
     dot.style.visibility = "visible";
+  }
+
+  function findHeaderAnchor() {
+    // Horizontal span of the active chat column.
+    const col = findMessageContainer() || findMessageInput();
+    const cr = col?.getBoundingClientRect();
+    const left = cr ? cr.left : 0;
+    const right = cr ? cr.right : window.innerWidth;
+
+    // Clickable controls sitting in the top band of that column: the chat
+    // header's call/video/search/menu buttons.
+    const controls = [];
+    for (const el of document.querySelectorAll('button, [role="button"], svg')) {
+      const r = el.getBoundingClientRect();
+      if (
+        r.top < 64 && r.bottom > 4 &&
+        r.width >= 16 && r.width <= 64 &&
+        r.height >= 16 && r.height <= 64 &&
+        r.left >= left - 6 && r.right <= right + 6
+      ) {
+        controls.push(r);
+      }
+    }
+    if (!controls.length) return null;
+
+    // The buttons cluster on the right of the header; anchor to the
+    // leftmost one of that right-side cluster.
+    const mid = (left + right) / 2;
+    const rightSide = controls.filter((r) => r.left > mid);
+    const pool = rightSide.length ? rightSide : controls;
+    const leftmost = pool.reduce((a, b) => (b.left < a.left ? b : a));
+
+    return { x: leftmost.left, y: leftmost.top + leftmost.height / 2 };
   }
 
   function startDotTracking() {
