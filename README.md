@@ -73,31 +73,28 @@ The Firefox package is **not signed** (AMO signing would tie the add-on to a nam
 - **Temporary (any Firefox):** `about:debugging` → **This Firefox** → **Load Temporary Add-on** → pick `pardeh-<version>-firefox.xpi`. Works everywhere but is removed on restart.
 - **Permanent:** on **Firefox Developer Edition, Nightly, or ESR**, set `xpinstall.signatures.required = false` in `about:config`, then open the `.xpi` from `about:addons`. It stays installed across restarts. The extension ID is fixed: `pardeh@e2e-encryption.bale.ai`.
 
-### Chrome / Chromium — developer install
+### Chrome / Chromium — developer install (simplest)
 
-`chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the repo root (or an unzipped `pardeh-<version>-chrome.zip`). Chrome fixes the extension ID to `gafeecfbmpdmhobcpcnppplibbipjonn` via the `key` in the manifest.
+`chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the repo root (or an unzipped `pardeh-<version>-chrome.zip`). Works on any Chromium browser (Chrome, Brave, Helium, …). The extension ID is fixed to `gafeecfbmpdmhobcpcnppplibbipjonn` via the `key` in the manifest.
 
-> Chrome blocks installing a `.crx` by drag-and-drop for regular users — that is a Chrome policy, not a limitation here. Use the developer install above, or the managed install below.
+> **Dragging the `.crx` onto the browser will fail with `CRX_REQUIRED_PROOF_MISSING`.** That is by design: Chromium only accepts a `.crx` that carries a Web Store proof *or* is installed via policy. Our `.crx` is self-signed, so use the developer install above, or the policy install below — not drag-and-drop.
 
-### Chrome — managed / enterprise install (`.crx`)
+### Chrome — policy install with auto-update (`.crx`)
 
-`pardeh-<version>-chrome.crx` is a signed CRX3 with the stable ID above, for policy-based deployment. Host the `.crx` and `updates.xml` (both attached to the release) somewhere your machines can reach, then set an admin policy:
+`pardeh-<version>-chrome.crx` is a signed CRX3 with the stable ID above. A managed-policy install bypasses the proof requirement and auto-updates from the release. On Linux, drop a policy file (Chromium: `/etc/chromium/policies/managed/pardeh.json`; Chrome: `/etc/opt/chrome/policies/managed/pardeh.json`; other Chromium forks use their own dir — check `browser://policy` for the loaded location):
 
-`ExtensionInstallForcelist` (one entry):
-```
-gafeecfbmpdmhobcpcnppplibbipjonn;https://your-host/updates.xml
-```
-or `ExtensionSettings`:
 ```json
 {
-  "gafeecfbmpdmhobcpcnppplibbipjonn": {
-    "installation_mode": "force_installed",
-    "update_url": "https://your-host/updates.xml"
+  "ExtensionSettings": {
+    "gafeecfbmpdmhobcpcnppplibbipjonn": {
+      "installation_mode": "normal_installed",
+      "update_url": "https://github.com/PechenyeRU/pardeh/releases/latest/download/updates.xml"
+    }
   }
 }
 ```
 
-Updates are served from the `update_url` baked into the manifest (`releases/latest/download/updates.xml`), so a policy pointing at the same file keeps managed installs current. Every release is signed with the same key, so Chrome accepts the updates.
+Restart the browser; it fetches `updates.xml` → the `.crx` and installs it (`normal_installed` lets you disable/remove it; use `force_installed` to pin it). Because the manifest's `update_url` and every release point at the same key, managed installs stay current automatically. On Windows/macOS set the same `ExtensionSettings` via registry / configuration profile.
 
 ### Building & releasing
 
