@@ -62,15 +62,46 @@ If **both** parties initiate simultaneously, a deterministic tie-break on the pu
 
 Chats created with pre-2.0 versions keep decrypting through the legacy code path, and sending keeps working with the old key, but the legacy scheme (raw ECDH secret used directly as the AES key) is weaker — the UI flags such chats; rotate keys to upgrade them.
 
-## Install (developer mode)
+## Install
 
-**Chrome / Chromium**
-1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the repo root.
+Every release on the [Releases page](https://github.com/PechenyeRU/pardeh/releases) ships pre-built packages. `./build.sh` produces the same packages locally from the single source tree (the Firefox MV2 manifest is generated at build time).
 
-**Firefox**
-1. `./build.sh` → `about:debugging` → **This Firefox** → **Load Temporary Add-on** → pick `dist/pardeh-<version>-firefox.xpi`.
+### Firefox — unsigned `.xpi`
 
-Both packages are produced by `./build.sh` from a single source tree (the Firefox MV2 manifest is generated at build time).
+The Firefox package is **not signed** (AMO signing would tie the add-on to a named Mozilla developer account). Firefox release/beta only install signed add-ons permanently, so you have two options:
+
+- **Temporary (any Firefox):** `about:debugging` → **This Firefox** → **Load Temporary Add-on** → pick `pardeh-<version>-firefox.xpi`. Works everywhere but is removed on restart.
+- **Permanent:** on **Firefox Developer Edition, Nightly, or ESR**, set `xpinstall.signatures.required = false` in `about:config`, then open the `.xpi` from `about:addons`. It stays installed across restarts. The extension ID is fixed: `pardeh@e2e-encryption.bale.ai`.
+
+### Chrome / Chromium — developer install
+
+`chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the repo root (or an unzipped `pardeh-<version>-chrome.zip`). Chrome fixes the extension ID to `gafeecfbmpdmhobcpcnppplibbipjonn` via the `key` in the manifest.
+
+> Chrome blocks installing a `.crx` by drag-and-drop for regular users — that is a Chrome policy, not a limitation here. Use the developer install above, or the managed install below.
+
+### Chrome — managed / enterprise install (`.crx`)
+
+`pardeh-<version>-chrome.crx` is a signed CRX3 with the stable ID above, for policy-based deployment. Host the `.crx` and `updates.xml` (both attached to the release) somewhere your machines can reach, then set an admin policy:
+
+`ExtensionInstallForcelist` (one entry):
+```
+gafeecfbmpdmhobcpcnppplibbipjonn;https://your-host/updates.xml
+```
+or `ExtensionSettings`:
+```json
+{
+  "gafeecfbmpdmhobcpcnppplibbipjonn": {
+    "installation_mode": "force_installed",
+    "update_url": "https://your-host/updates.xml"
+  }
+}
+```
+
+Updates are served from the `update_url` baked into the manifest (`releases/latest/download/updates.xml`), so a policy pointing at the same file keeps managed installs current. Every release is signed with the same key, so Chrome accepts the updates.
+
+### Building & releasing
+
+`./build.sh` writes the Chrome zip and Firefox xpi to `dist/`. Tagging a version (`git tag vX.Y.Z && git push --tags`) runs the release workflow, which additionally packs the signed Chrome `.crx` + `updates.xml`. The Chrome signing key lives only in a GitHub Secret (`CHROME_CRX_PRIVATE_KEY`), never in the repo.
 
 ## Usage
 

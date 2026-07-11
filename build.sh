@@ -44,6 +44,8 @@ with open("manifest.json") as f:
 
 m["manifest_version"] = 2
 m.pop("minimum_chrome_version", None)
+m.pop("key", None)          # Chrome-only: fixes the extension ID; Firefox uses gecko.id
+m.pop("update_url", None)   # Chrome-only self-host update URL (Firefox uses gecko.update_url)
 
 host_permissions = m.pop("host_permissions", [])
 permissions = [p for p in m.get("permissions", []) if p != "scripting"]

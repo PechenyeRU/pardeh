@@ -1,9 +1,17 @@
 name: release
 
-# Packages the extension and publishes a GitHub Release with the Chrome
-# zip and Firefox xpi attached. Triggered by pushing a version tag
-# (e.g. `git tag v2.0.2 && git push --tags`) or manually from the Actions
-# tab (which builds and uploads artifacts without creating a release).
+# Packages the extension and publishes a GitHub Release with:
+#   - pardeh-<v>-chrome.zip   (unpacked / dev: Load unpacked)
+#   - pardeh-<v>-chrome.crx   (signed CRX3, stable ID, for enterprise policy)
+#   - updates.xml             (Chrome self-host update manifest)
+#   - pardeh-<v>-firefox.xpi  (unsigned; temporary add-on / ESR)
+#
+# Firefox is intentionally NOT signed: AMO signing would tie the add-on to
+# a named Mozilla developer account.
+#
+# Triggered by pushing a version tag (v*), or manually (builds artifacts,
+# no release). Secret used:
+#   CHROME_CRX_PRIVATE_KEY  (required for the .crx)
 
 on:
   push:
@@ -43,11 +51,43 @@ jobs:
       - name: Build packages
         run: ./build.sh
 
+      - name: Pack signed Chrome .crx + update manifest
+        env:
+          CHROME_CRX_PRIVATE_KEY: ${{ secrets.CHROME_CRX_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CHROME_CRX_PRIVATE_KEY:-}" ]; then
+            echo "::error::CHROME_CRX_PRIVATE_KEY secret is not set"
+            exit 1
+          fi
+          VERSION="$(node -p "require('./manifest.json').version")"
+          KEY_FILE="$(mktemp)"
+          printf '%s' "$CHROME_CRX_PRIVATE_KEY" > "$KEY_FILE"
+
+          rm -rf crxbuild && mkdir crxbuild
+          (cd crxbuild && unzip -q "../dist/pardeh-${VERSION}-chrome.zip")
+
+          CRX_URL="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME:-v$VERSION}/pardeh-${VERSION}-chrome.crx"
+          npx --yes crx3 \
+            -p "$KEY_FILE" \
+            -o "dist/pardeh-${VERSION}-chrome.crx" \
+            -x "dist/updates.xml" \
+            --crxURL "$CRX_URL" \
+            crxbuild/manifest.json
+
+          rm -f "$KEY_FILE"
+          echo "Packed dist/pardeh-${VERSION}-chrome.crx (ID: gafeecfbmpdmhobcpcnppplibbipjonn)"
+          cat dist/updates.xml
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pardeh-packages
-          path: dist/*
+          path: |
+            dist/*.zip
+            dist/*.crx
+            dist/*.xpi
+            dist/updates.xml
           if-no-files-found: error
 
       - name: Publish release
@@ -55,7 +95,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./manifest.json').version")"
           gh release create "$GITHUB_REF_NAME" \
-            dist/*.zip dist/*.xpi \
+            "dist/pardeh-${VERSION}-chrome.zip" \
+            "dist/pardeh-${VERSION}-chrome.crx" \
+            "dist/updates.xml" \
+            "dist/pardeh-${VERSION}-firefox.xpi" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
