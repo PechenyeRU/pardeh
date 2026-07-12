@@ -99,6 +99,8 @@ const PARDEH_DICTIONARIES = {
     toastOfferRekey: "New encryption key offer received — open Pardeh to verify and accept",
     toastEstablished: "End-to-end encryption established — verify the safety number in Pardeh",
     toastHandshakeFailed: "Handshake failed: {error}",
+    toastChatSyncing: "Chat is still loading — nothing was sent, try again in a moment",
+    toastKeyOtherChat: "Received a key that belongs to another chat — ignored",
 
     // Content: status dot + menu
     dotOff: "Encryption off",
@@ -201,6 +203,8 @@ const PARDEH_DICTIONARIES = {
     toastOfferRekey: "پیشنهاد کلید جدید دریافت شد — برای بررسی و پذیرش، پرده را باز کنید",
     toastEstablished: "رمزنگاری سرتاسری برقرار شد — شمارهٔ امنیتی را در پرده بررسی کنید",
     toastHandshakeFailed: "تبادل کلید ناموفق بود: {error}",
+    toastChatSyncing: "گفتگو هنوز در حال بارگذاری است — چیزی ارسال نشد، لحظه‌ای دیگر دوباره تلاش کنید",
+    toastKeyOtherChat: "کلیدی دریافت شد که متعلق به گفتگوی دیگری است — نادیده گرفته شد",
 
     dotOff: "رمزنگاری خاموش است",
     dotEnabledNoKey: "رمزنگاری فعال است — تبادل کلید لازم است",

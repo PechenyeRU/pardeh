@@ -83,7 +83,14 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "HS_DETECTED":
         return withChatLock(message.chatId, () =>
-          handleHandshakeDetected(message.chatId, message.kind, message.version, message.pubB64, tabId)
+          handleHandshakeDetected(
+            message.chatId,
+            message.kind,
+            message.version,
+            message.pubB64,
+            tabId,
+            message.historical === true
+          )
         );
 
       case "ENCRYPT_MESSAGE":
@@ -199,7 +206,7 @@ async function handleRotateKeys(chatId, tabId) {
   return sendHs1(chatId, tabId, { rotation: true });
 }
 
-async function handleHandshakeDetected(chatId, kind, version, pubB64, tabId) {
+async function handleHandshakeDetected(chatId, kind, version, pubB64, tabId, historical = false) {
   if (!chatId || !pubB64 || (kind !== 1 && kind !== 2)) {
     return { success: false, error: "Missing chatId, kind or pubB64" };
   }
@@ -227,7 +234,31 @@ async function handleHandshakeDetected(chatId, kind, version, pubB64, tabId) {
     return { success: true, ignored: true, reason: "known_key" };
   }
 
+  // A key that already belongs to ANOTHER chat can never be legitimate
+  // here: every handshake uses a fresh keypair, so this is either a
+  // marker mis-attributed while the user was switching chats or a replay
+  // of one chat's handshake into another (a cross-chat impersonation
+  // attempt). Acting on it would entangle the two chats' key state.
+  if (await isKeyKnownElsewhere(chatId, pubB64)) {
+    return { success: true, ignored: true, reason: "key_used_in_other_chat" };
+  }
+
   const context = await loadContext(chatId);
+
+  // Markers replayed from chat history may only complete a handshake this
+  // side is still waiting on. Anything else (fresh offers, rekeys) must
+  // arrive as a live message: re-reading old [[E2EHS..]] on every chat
+  // open would otherwise resurrect stale offers. Decided here on the
+  // authoritative pending state — the content script's snapshot can be
+  // mid-refresh during a chat switch and must not be trusted for this.
+  // The ignored key is ledgered as dead: it predates any handshake of
+  // ours, so it must never complete one later either (a re-scan during a
+  // future hs1_sent would otherwise finalize against a key whose private
+  // half is long gone).
+  if (historical && context.pending?.stage !== "hs1_sent") {
+    await addSeenKey(chatId, pubB64);
+    return { success: true, ignored: true, reason: "historical_marker" };
+  }
   const act = kind === 1
     ? SM.onHs1Detected(context, pubB64)
     : SM.onHs2Detected(context, pubB64);
@@ -319,7 +350,7 @@ async function handleSendEncrypted(chatId, text, tabId) {
   const encrypted = await handleEncryptMessage(chatId, text);
   if (!encrypted.success) return encrypted;
 
-  await sendChatMessage(tabId, encrypted.envelope);
+  await sendChatMessage(tabId, encrypted.envelope, chatId);
   return { success: true, legacy: encrypted.legacy };
 }
 
@@ -405,7 +436,7 @@ async function sendHs1(chatId, tabId, { rotation = false } = {}) {
 
   // Deliver first, persist after: if delivery fails nothing is stored and
   // the user simply retries the click from a clean state.
-  await sendChatMessage(tabId, Crypto.buildHandshakeMessage(1, ourPubB64));
+  await sendChatMessage(tabId, Crypto.buildHandshakeMessage(1, ourPubB64), chatId);
 
   // Ledger our own key the moment it is on the wire: once the pending
   // state expires or is cleared nothing else remembers this key, and a
@@ -441,7 +472,7 @@ async function respondHs2(chatId, tabId, context, act) {
   // Deliver HS2 before persisting the epoch so a failed delivery leaves a
   // retryable state. A crash between the two steps loses the epoch and
   // requires a key rotation; that window is accepted for simplicity.
-  await sendChatMessage(tabId, Crypto.buildHandshakeMessage(2, ourPubB64));
+  await sendChatMessage(tabId, Crypto.buildHandshakeMessage(2, ourPubB64), chatId);
 
   const established = await establishEpoch(chatId, privateKey, peerPublicKey, ourPubB64, act.peerPubB64);
   return { success: true, action: "sent_hs2_key_established", ...established };
@@ -506,6 +537,30 @@ async function establishEpoch(chatId, privateKey, peerPublicKey, ourPubB64, peer
 async function getSeenKeys(chatId) {
   const stored = await api.storage.local.get([`${SEEN_KEYS_PREFIX}${chatId}`]);
   return stored[`${SEEN_KEYS_PREFIX}${chatId}`] || [];
+}
+
+// True when the public key is already tied to a DIFFERENT chat: in its
+// seen-keys ledger, in its established meta (ledgers are trimmed, metas
+// are not) or announced by its in-flight handshake. Fresh keypairs per
+// handshake make a legitimate cross-chat repeat impossible.
+async function isKeyKnownElsewhere(chatId, pubB64) {
+  const all = await api.storage.local.get(null);
+  for (const [storageKey, value] of Object.entries(all)) {
+    if (storageKey.startsWith(SEEN_KEYS_PREFIX)) {
+      if (storageKey === `${SEEN_KEYS_PREFIX}${chatId}`) continue;
+      if (Array.isArray(value) && value.includes(pubB64)) return true;
+    } else if (storageKey.startsWith(META_PREFIX)) {
+      if (storageKey === `${META_PREFIX}${chatId}`) continue;
+      if (value?.ourPubB64 === pubB64 || value?.peerPubB64 === pubB64) return true;
+    }
+  }
+
+  for (const pending of await getAllPendings()) {
+    if (pending.chatId === chatId) continue;
+    if (pending.ourPubB64 === pubB64 || pending.peerHs1B64 === pubB64) return true;
+  }
+
+  return false;
 }
 
 async function addSeenKey(chatId, ...keys) {
@@ -629,6 +684,11 @@ async function getPending(chatId) {
   return row || null;
 }
 
+async function getAllPendings() {
+  const rows = await idbRequest("pending", "readonly", (s) => s.getAll());
+  return rows || [];
+}
+
 function putPending(chatId, pending) {
   return idbRequest("pending", "readwrite", (s) => s.put({ ...pending, chatId }));
 }
@@ -667,10 +727,18 @@ async function deleteAllChatKeys(chatId) {
 // Tab plumbing
 // ---------------------------------------------------------------------------
 
-async function sendChatMessage(tabId, text) {
+// Injecting into "the open chat" is not enough: between the decision and
+// the injection the user may have switched chats, and a handshake marker
+// or envelope landing in the wrong one poisons both chats' key state. The
+// payload names its chat and the content script refuses to deliver it
+// anywhere else; a refusal is terminal — retrying would just target
+// whatever chat comes next.
+async function sendChatMessage(tabId, text, chatId) {
+  if (!chatId) throw new Error("missing_chat_id");
   const targetTabId = tabId ?? (await getActiveBaleTabId());
   if (!targetTabId) throw new Error("No Bale tab found");
-  await sendMessageToTab(targetTabId, { type: "SEND_CHAT_MESSAGE", text });
+  const res = await sendMessageToTab(targetTabId, { type: "SEND_CHAT_MESSAGE", text, chatId });
+  if (!res?.success) throw new Error(res?.error || "delivery_failed");
 }
 
 async function getActiveBaleTabId() {

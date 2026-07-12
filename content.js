@@ -44,8 +44,21 @@
     initialized: false,
 
     chatId: null,
+    // Bumped synchronously at the start of every chat switch. Async flows
+    // capture it before their first await and drop their result if it moved:
+    // a GET_CHAT_STATE answer, a decrypt batch or a handshake report that
+    // crossed a chat switch belongs to the previous chat and must not be
+    // applied to the new one.
+    chatGen: 0,
+    // False from the start of a chat switch until the message list has
+    // settled and been scanned. While false, every marker the observer
+    // streams is chat HISTORY being rendered, not a live message — on a
+    // real SPA the history arrives through the same MutationObserver as
+    // live traffic, so the callback alone cannot tell them apart.
+    renderingSettled: false,
     // Snapshot of GET_CHAT_STATE: { enabled, v2Ready, legacyReady, epoch,
-    // fingerprint, pendingStage, warnRekey, peerLegacy }
+    // fingerprint, pendingStage, warnRekey, peerLegacy }. null means
+    // "unknown / mid-switch": encryption paths treat that as fail-closed.
     chat: null,
 
     messageObserver: null,
@@ -60,8 +73,6 @@
     attachRetryTimer: null,
     initTimer: null,
 
-    processedCache: new Set(),
-    maxProcessedCache: 500,
 
     // envelope -> { ok, plaintext?, code? }; cleared when keys change.
     plaintextCache: new Map(),
@@ -155,6 +166,7 @@
     attachUiHooks(true);
     observeMessages(true);
     await scanExistingMessages();
+    state.renderingSettled = true;
     updateEncryptionStatusUI();
     startPreviewObserver();
     scheduleSanitizePreviews();
@@ -218,11 +230,13 @@
           return true;
 
         case "GET_CHAT_ID":
-          sendResponse({ chatId: state.chatId });
+          // Only ever hand out an id that matches the live URL: a stale
+          // one would steer the composer/popup at another chat's keys.
+          sendResponse({ chatId: verifiedChatId() });
           return true;
 
         case "SEND_CHAT_MESSAGE":
-          handleSendChatMessageCommand(message.text)
+          handleSendChatMessageCommand(message.text, message.chatId)
             .then(() => sendResponse({ success: true }))
             .catch((err) => sendResponse({ success: false, error: String(err?.message || err) }));
           return true;
@@ -294,15 +308,19 @@
     api.storage.onChanged.addListener(state.onStorageChanged);
   }
 
-  async function reloadChatState() {
+  async function reloadChatState(gen = state.chatGen) {
     if (!state.chatId || state.destroyed) {
       state.chat = null;
       updateEncryptionStatusUI();
       return;
     }
 
+    const chatId = state.chatId;
     const hadKeys = canDecrypt();
-    const res = await safeSendToBackground("GET_CHAT_STATE", { chatId: state.chatId });
+    const res = await safeSendToBackground("GET_CHAT_STATE", { chatId });
+    // A switch happened while the background was answering: this snapshot
+    // describes the previous chat, applying it would mislabel the new one.
+    if (gen !== state.chatGen || chatId !== state.chatId) return;
     state.chat = res?.success ? res : null;
 
     if (!hadKeys && canDecrypt()) {
@@ -340,49 +358,95 @@
     if (state.routeHooksInstalled) return;
     state.routeHooksInstalled = true;
 
-    const notifyRouteChange = async () => {
+    const notifyRouteChange = () => {
       if (state.destroyed) return;
 
       const newChatId = extractChatId();
       if (newChatId && newChatId !== state.chatId) {
-        await handleChatChanged(newChatId);
+        handleChatChanged(newChatId).catch((err) =>
+          console.error("[E2E] route change failed:", err)
+        );
       }
     };
+
+    // The history.pushState monkey-patch below only sees calls made from
+    // this isolated world — the page's own router calls its own binding.
+    // The Navigation API dispatches real events across worlds, so where
+    // available it is the reliable push/replaceState signal.
+    if (window.navigation?.addEventListener) {
+      window.navigation.addEventListener("navigate", () => {
+        // The URL is committed after the navigate event for same-document
+        // navigations; defer one macrotask before reading it.
+        setTimeout(notifyRouteChange, 0);
+      });
+    }
 
     const originalPushState = history.pushState;
     const originalReplaceState = history.replaceState;
 
     history.pushState = function (...args) {
       const result = originalPushState.apply(this, args);
-      setTimeout(() => {
-        notifyRouteChange().catch((err) => console.error("[E2E] pushState route change failed:", err));
-      }, 50);
+      notifyRouteChange();
       return result;
     };
 
     history.replaceState = function (...args) {
       const result = originalReplaceState.apply(this, args);
-      setTimeout(() => {
-        notifyRouteChange().catch((err) => console.error("[E2E] replaceState route change failed:", err));
-      }, 50);
+      notifyRouteChange();
       return result;
     };
 
-    window.addEventListener("popstate", () => {
-      setTimeout(() => {
-        notifyRouteChange().catch((err) => console.error("[E2E] popstate route change failed:", err));
-      }, 50);
-    });
+    window.addEventListener("popstate", notifyRouteChange);
 
-    state.urlWatchInterval = setInterval(async () => {
+    state.urlWatchInterval = setInterval(() => {
       if (state.destroyed) return;
 
       const currentUrl = location.href;
       if (currentUrl === state.lastKnownUrl) return;
 
       state.lastKnownUrl = currentUrl;
-      await notifyRouteChange();
-    }, 500);
+      notifyRouteChange();
+    }, 250);
+  }
+
+  // Synchronous head of a chat switch: after this returns, nothing left
+  // over from the previous chat can act — caches are empty, the snapshot
+  // is unknown (fail closed), the composer iframe with its old chat id is
+  // gone, and every in-flight async flow is invalidated by the generation
+  // bump. The async tail (handleChatChanged) rebuilds for the new chat.
+  function beginChatTransition(newChatId) {
+    state.chatGen += 1;
+    state.chatId = newChatId;
+    state.chat = null;
+    state.renderingSettled = false;
+    state.plaintextCache.clear();
+    state.decryptQueue.clear();
+    closeStatusMenu();
+    removeComposer();
+
+    if (state.messageObserver) {
+      state.messageObserver.disconnect();
+      state.messageObserver = null;
+    }
+
+    return state.chatGen;
+  }
+
+  // The chat id that is both in the URL right now and the one all local
+  // caches/snapshots belong to. Returns null while a switch is being
+  // digested — callers must treat that as "do nothing" (fail closed). If
+  // the URL moved and no route hook caught it, this is also what finally
+  // triggers the switch.
+  function verifiedChatId() {
+    const live = extractChatId();
+    if (!live) return null;
+    if (live !== state.chatId) {
+      handleChatChanged(live).catch((err) =>
+        console.error("[E2E] late chat change failed:", err)
+      );
+      return null;
+    }
+    return live;
   }
 
   async function handleChatChanged(newChatId) {
@@ -391,28 +455,59 @@
 
     console.log("[E2E] Chat changed:", state.chatId, "=>", newChatId);
 
-    state.chatId = newChatId;
-    state.processedCache.clear();
-    state.plaintextCache.clear();
-    state.decryptQueue.clear();
-    closeStatusMenu();
-
-    await reloadChatState();
-
-    if (state.messageObserver) {
-      state.messageObserver.disconnect();
-      state.messageObserver = null;
-    }
+    const gen = beginChatTransition(newChatId);
 
     attachUiHooks(true);
+
+    await reloadChatState(gen);
+    if (gen !== state.chatGen || state.destroyed) return;
+
     observeMessages(true);
 
-    // Wait a bit for SPA DOM to finish replacing content
-    await sleep(150);
+    // Let the SPA finish swapping the message list before scanning it:
+    // scanning too early reads the PREVIOUS chat's still-mounted messages
+    // and would attribute their handshake markers to the new chat.
+    await waitForDomSettle(gen);
+    if (gen !== state.chatGen || state.destroyed) return;
     await scanExistingMessages();
+    if (gen !== state.chatGen || state.destroyed) return;
+    state.renderingSettled = true;
 
     updateEncryptionStatusUI();
     updateComposer();
+  }
+
+  // Resolves once the message list has had no mutations for a quiet
+  // window (capped — a busy chat that never settles still gets scanned).
+  function waitForDomSettle(gen, { quietMs = 250, maxMs = 1500 } = {}) {
+    return new Promise((resolve) => {
+      const container = findMessageContainer();
+      if (!container) {
+        setTimeout(resolve, quietMs);
+        return;
+      }
+
+      let timer = null;
+      const started = Date.now();
+      const observer = new MutationObserver(() => arm());
+
+      const finish = () => {
+        observer.disconnect();
+        resolve();
+      };
+
+      const arm = () => {
+        clearTimeout(timer);
+        if (state.destroyed || gen !== state.chatGen || Date.now() - started > maxMs) {
+          finish();
+          return;
+        }
+        timer = setTimeout(finish, quietMs);
+      };
+
+      observer.observe(container, { childList: true, subtree: true });
+      arm();
+    });
   }
 
   function startDomWatcher() {
@@ -581,11 +676,21 @@
   async function processNewMessage(messageElement, { historical = false } = {}) {
     if (state.destroyed) return;
 
+    // Attribution guard: this DOM node belongs to whatever chat the tab
+    // shows RIGHT NOW. If the URL and the local state disagree, a switch
+    // is mid-flight — drop the event; the post-switch scan re-reads the
+    // list under the settled id.
+    const gen = state.chatGen;
+    const chatId = verifiedChatId();
+    if (!chatId) return;
+
     const fullText = messageElement.textContent?.trim();
     if (!fullText) return;
 
     // Handshake markers: report to the background state machine once per
-    // (chat, marker) — echoes and duplicates are also filtered over there.
+    // (chat, marker) — echoes, duplicates, history replays and keys that
+    // belong to another chat are all filtered over there on authoritative
+    // per-chat state.
     const handshake = Crypto.parseHandshakeText(fullText);
     if (handshake) {
       // Always collapse the raw [[E2EHS..]] bubble to a tidy badge, even
@@ -593,26 +698,38 @@
       // DOM node after every SPA re-render).
       collapseHandshakeBubble(messageElement);
 
-      // Handshakes in chat history (initial scan) must not create fresh
-      // key offers: re-reading old [[E2EHS..]] on every chat open would
-      // otherwise resurrect stale offers and, after a clear, drive both
-      // sides to answer mismatched keys. Only process a historical marker
-      // when it could complete a handshake WE are still waiting on.
-      if (historical && state.chat?.pendingStage !== "hs1_sent") return;
+      // Report each (chat, marker) at most once per page load — the set
+      // deliberately survives chat switches. Re-entering a chat re-mounts
+      // its whole history; re-reporting those markers during an in-flight
+      // handshake could complete it against a key that predates it.
+      const markerKey = `${chatId}|hs${handshake.kind}:${handshake.pubB64}`;
+      if (reportedMarkers.has(markerKey)) return;
+      rememberMarker(markerKey);
 
-      const cacheKey = buildProcessedKey(`hs${handshake.kind}:${handshake.pubB64}`);
-      if (cacheKey && state.processedCache.has(cacheKey)) return;
-      markProcessed(cacheKey);
+      // Until the post-switch render has settled, everything the observer
+      // streams is history being mounted, whatever the callback says.
+      const replayed = historical || !state.renderingSettled;
 
-      const activeChatId = state.chatId || extractChatId();
-      if (!activeChatId) return;
+      if (!replayed) {
+        // A chat switch swaps the URL and the message list in whichever
+        // order the SPA prefers; a marker streamed by the observer during
+        // that window can belong to either chat. Hold it briefly, then
+        // require the node to still be mounted under an unchanged chat —
+        // stale nodes get unmounted by the swap. Live handshakes are
+        // human-paced; the delay is invisible.
+        await sleep(250);
+        if (gen !== state.chatGen || verifiedChatId() !== chatId) return;
+        if (!messageElement.isConnected) return;
+      }
 
       const res = await safeSendToBackground("HS_DETECTED", {
-        chatId: activeChatId,
+        chatId,
         kind: handshake.kind,
         version: handshake.version,
-        pubB64: handshake.pubB64
+        pubB64: handshake.pubB64,
+        historical: replayed
       });
+      if (gen !== state.chatGen) return;
       reportHandshakeFeedback(res);
 
       // A detection that moved the handshake forward changes what the dot
@@ -664,14 +781,25 @@
 
   async function flushDecryptQueue() {
     state.decryptTimer = null;
-    if (state.destroyed || !state.chatId) return;
+    if (state.destroyed) return;
+
+    // Mid-switch the queue may hold the previous chat's envelopes (or the
+    // new chat's queued under the old id): drop them all — the post-switch
+    // scan re-queues whatever the settled chat actually shows.
+    const gen = state.chatGen;
+    const chatId = verifiedChatId();
+    if (!chatId) {
+      state.decryptQueue.clear();
+      return;
+    }
 
     const batch = [...state.decryptQueue.entries()];
     state.decryptQueue.clear();
     if (!batch.length) return;
 
     const envelopes = batch.map(([envelope]) => envelope);
-    const res = await safeSendToBackground("DECRYPT_BATCH", { chatId: state.chatId, envelopes });
+    const res = await safeSendToBackground("DECRYPT_BATCH", { chatId, envelopes });
+    if (gen !== state.chatGen) return;
     const results = res?.success ? res.results : null;
 
     batch.forEach(([envelope, elements], index) => {
@@ -720,7 +848,18 @@
   // window (a malicious page could otherwise ship it on its own trigger,
   // e.g. a keyup listener). On any anomaly nothing is sent.
   function interceptOutgoingMessage(e) {
-    if (!canEncrypt() || !state.messageInput) return;
+    if (!state.messageInput) return;
+
+    // No chat identity anywhere (URL carries none and none was ever
+    // tracked): there are no keys to protect, this send is not ours to
+    // gate.
+    if (!extractChatId() && !state.chatId) return;
+
+    const chatId = verifiedChatId();
+    const settled = !!(chatId && state.chat);
+
+    // Known-plaintext chat: let Bale's own send run.
+    if (settled && !canEncrypt()) return;
 
     const text = getInputText(state.messageInput).trim();
     if (!text) return;
@@ -730,18 +869,28 @@
     e.stopPropagation();
     e.stopImmediatePropagation?.();
 
+    // Mid-switch the snapshot is unknown: this chat may well be an
+    // encrypted one, so letting the native send through could put
+    // plaintext on the wire. Block the send, keep the text in the input
+    // and let the user retry once the state has settled.
+    if (!settled) {
+      showToast(tr("toastChatSyncing"), "warn");
+      return;
+    }
+
     clearInput(state.messageInput);
-    handleEncryptedSend(text).catch((err) => {
+    handleEncryptedSend(text, chatId).catch((err) => {
       console.error("[E2E] Encrypted send failed:", err);
     });
   }
 
-  async function handleEncryptedSend(plaintext) {
+  async function handleEncryptedSend(plaintext, chatId) {
     if (state.destroyed || !state.messageInput) return;
 
+    const gen = state.chatGen;
     try {
       const res = await safeSendToBackground("ENCRYPT_MESSAGE", {
-        chatId: state.chatId,
+        chatId,
         text: plaintext
       });
 
@@ -755,6 +904,13 @@
 
       setInputText(state.messageInput, res.envelope);
       await sleep(80);
+
+      // The envelope is bound to the chat it was encrypted for: if the
+      // user switched chats during the async window, dispatching now
+      // would drop chat A's ciphertext into chat B.
+      if (gen !== state.chatGen || verifiedChatId() !== chatId) {
+        throw new Error("chat_changed");
+      }
 
       // Verify the page did not tamper with the injected envelope, then
       // dispatch the send synchronously so there is no gap between the
@@ -776,15 +932,29 @@
     }
   }
 
-  async function handleSendChatMessageCommand(text) {
+  // Injects background-produced text (handshake markers, envelopes) into
+  // the chat input and sends it. The payload names the chat it was built
+  // for; it is checked against the live URL both before touching the
+  // input and again right before the click — the background decided on a
+  // chat that may no longer be the one on screen.
+  async function handleSendChatMessageCommand(text, chatId) {
+    if (!chatId) throw new Error("missing_chat_id");
+    if (verifiedChatId() !== chatId) throw new Error("wrong_chat");
+
     const input = await waitForInput(5000);
     if (!input) throw new Error("Chat input not found");
 
     const sendButton = await waitForSendButton(5000);
     if (!sendButton) throw new Error("Send button not found");
 
+    if (verifiedChatId() !== chatId) throw new Error("wrong_chat");
     setInputText(input, text);
     await sleep(120);
+
+    if (verifiedChatId() !== chatId) {
+      clearInput(input);
+      throw new Error("wrong_chat");
+    }
 
     state.bypassNextSend = true;
     sendButton.dispatchEvent(new MouseEvent("click", {
@@ -834,10 +1004,15 @@
 
   function ensureComposer() {
     let frame = document.getElementById(COMPOSER_ID);
-    if (frame?.isConnected) return frame;
+    // The frame resolved its chat id at load time; after a chat switch it
+    // would keep encrypting for the previous chat. Rebuild it instead of
+    // reusing it — a fresh frame re-resolves against the live chat.
+    if (frame?.isConnected && frame.dataset.e2eChatId === state.chatId) return frame;
+    if (frame) removeComposer();
 
     frame = document.createElement("iframe");
     frame.id = COMPOSER_ID;
+    frame.dataset.e2eChatId = state.chatId;
     frame.src = api.runtime.getURL("composer.html");
     frame.setAttribute("scrolling", "no");
     frame.style.cssText = `
@@ -961,6 +1136,14 @@
         state.legacyToastShown = true;
         showToast(tr("toastOutdatedPeer"), "warn");
       }
+      return;
+    }
+
+    if (res.ignored && res.reason === "key_used_in_other_chat") {
+      // Either a mis-attributed marker during a chat switch or a replay of
+      // another chat's handshake into this one; both must never be acted
+      // on, but the user should know something odd arrived.
+      showToast(tr("toastKeyOtherChat"), "warn");
       return;
     }
 
@@ -1274,11 +1457,16 @@
     toggleBtn.textContent = tr(state.chat?.enabled ? "menuDisable" : "menuEnable");
     toggleBtn.style.cssText = buttonCss;
     toggleBtn.addEventListener("click", async () => {
+      const chatId = verifiedChatId();
+      closeStatusMenu();
+      if (!chatId) {
+        showToast(tr("toastChatSyncing"), "warn");
+        return;
+      }
       await safeSendToBackground("ENCRYPT_TOGGLE", {
-        chatId: state.chatId,
+        chatId,
         enabled: !state.chat?.enabled
       });
-      closeStatusMenu();
     });
     menu.appendChild(toggleBtn);
 
@@ -1301,8 +1489,13 @@
       hsBtn.style.cssText = buttonCss + (handshakeLabel.disabled ? "opacity: 0.55; cursor: default;" : "");
       hsBtn.addEventListener("click", async () => {
         if (handshakeLabel.disabled) return;
+        const chatId = verifiedChatId();
         closeStatusMenu();
-        const res = await safeSendToBackground("HANDSHAKE_CLICK", { chatId: state.chatId });
+        if (!chatId) {
+          showToast(tr("toastChatSyncing"), "warn");
+          return;
+        }
+        const res = await safeSendToBackground("HANDSHAKE_CLICK", { chatId });
         reportClickFeedback(res);
       });
       menu.appendChild(hsBtn);
@@ -1326,8 +1519,13 @@
           }, 4000);
           return;
         }
+        const chatId = verifiedChatId();
         closeStatusMenu();
-        const res = await safeSendToBackground("ROTATE_KEYS", { chatId: state.chatId });
+        if (!chatId) {
+          showToast(tr("toastChatSyncing"), "warn");
+          return;
+        }
+        const res = await safeSendToBackground("ROTATE_KEYS", { chatId });
         reportClickFeedback(res);
       });
       menu.appendChild(restartBtn);
@@ -1811,18 +2009,17 @@
     setInputText(el, "");
   }
 
-  function buildProcessedKey(text) {
-    if (!state.chatId || !text) return null;
-    return `${state.chatId}|${text}`;
-  }
+  // (chat, marker) pairs already reported to the background this page
+  // load. Never cleared on chat switches — that is the point: re-mounted
+  // history must not be re-reported (see processNewMessage).
+  const reportedMarkers = new Set();
+  const MAX_REPORTED_MARKERS = 500;
 
-  function markProcessed(key) {
-    if (!key) return;
-    state.processedCache.add(key);
-
-    if (state.processedCache.size > state.maxProcessedCache) {
-      const first = state.processedCache.values().next().value;
-      state.processedCache.delete(first);
+  function rememberMarker(key) {
+    reportedMarkers.add(key);
+    if (reportedMarkers.size > MAX_REPORTED_MARKERS) {
+      const first = reportedMarkers.values().next().value;
+      reportedMarkers.delete(first);
     }
   }
 

@@ -129,16 +129,21 @@ async function submit() {
   const text = inputEl.value.trim();
   if (!text || sending) return;
 
-  if (!chatId) {
-    await loadChatId();
-    if (!chatId) {
-      showError(t("errComposeFailed", { error: "no chat" }));
-      return;
-    }
-  }
-
   sending = true;
   sendEl.disabled = true;
+
+  // Re-resolve on every send: the id cached at load time goes stale the
+  // moment the user switches chats, and sending under it would encrypt
+  // for the previous chat. The content script answers with the id it
+  // verified against the live URL, or null while a switch is settling.
+  await loadChatId();
+  if (!chatId) {
+    sending = false;
+    sendEl.disabled = false;
+    showError(t("errComposeFailed", { error: "no chat" }));
+    return;
+  }
+  sendEl.disabled = true; // loadChatId re-enabled it; still sending
 
   const res = await sendToBackground("SEND_ENCRYPTED", { chatId, text });
 
